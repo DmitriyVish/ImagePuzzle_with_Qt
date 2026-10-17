@@ -1,0 +1,2 @@
+// Windows Shell читает значок из PE-ресурса без запуска Qt и без внешних файлов.
+1 ICON "@PROJECT_SOURCE_DIR@/assets/icons/imagepuzzle.ico"

@@ -1,0 +1,11 @@
+/build/
+/.qtcreator/
+CMakeLists.txt.user*
+
+/dist/
+
+# Готовые комплекты Windows и архивы не входят в исходники проекта.
+/ImagePuzzle-*/
+/ImagePuzzle-*.zip
+__pycache__/
+*.pyc
