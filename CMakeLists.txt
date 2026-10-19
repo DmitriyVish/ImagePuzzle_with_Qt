@@ -22,6 +22,7 @@ qt_add_library(ImagePuzzleUi STATIC
     src/ui/mainwindow.h src/ui/mainwindow.cpp src/ui/mainwindow.ui
     src/ui/loadpage.h src/ui/loadpage.cpp
     src/ui/gamepage.h src/ui/gamepage.cpp
+    src/ui/gamehelpdialog.h src/ui/gamehelpdialog.cpp
     src/ui/imagepreview.h src/ui/imagepreview.cpp
     src/ui/puzzlescene.h src/ui/puzzlescene.cpp
     src/ui/puzzleview.h src/ui/puzzleview.cpp

@@ -4,6 +4,7 @@
 #include "io/imageloader.h"
 #include <QFutureWatcher>
 #include <QMainWindow>
+#include <QSet>
 #include <memory>
 class GameController;
 class GamePage;
@@ -25,6 +26,11 @@ public:
 public slots:
     /** @brief Начинает фоновое чтение, не меняя прежнюю картинку при ошибке. @param path Файл или ресурс. */
     void loadImage(const QString &path);
+protected:
+    /** @brief Вписывает поле сборки и лоток после смены состояния окна, включая возврат к обычному размеру.
+     * Ручной масштаб сохраняется при обычном изменении размера, но сбрасывается при разворачивании окна.
+     * @param event Событие изменения состояния или оформления окна. */
+    void changeEvent(QEvent *event) override;
 private slots:
     /** @brief Передаёт прочитанное изображение интерфейсу в GUI-потоке. */
     void imageLoaded();
@@ -45,6 +51,8 @@ private:
     QFutureWatcher<ImageLoadResult> *m_loader; ///< GUI-наблюдатель результата фонового чтения.
     QImage m_image; ///< Текущее рабочее изображение.
     QString m_imagePath; ///< Путь активного запроса загрузки.
+    QString m_loadedImageKey; ///< Канонический путь успешно выбранного изображения; ошибка загрузки его не меняет.
+    QSet<QString> m_helpShownImages; ///< Изображения, для которых правила уже показаны в текущем сеансе окна.
     bool m_reducedMotion = false; ///< Сохранённое предпочтение отключения анимации.
 };
 #endif

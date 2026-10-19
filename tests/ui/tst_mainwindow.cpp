@@ -1,6 +1,8 @@
 #include "ui/mainwindow.h"
 #include "ui/loadpage.h"
 #include "ui/puzzleview.h"
+#include "ui/gamehelpdialog.h"
+#include "ui/gamepage.h"
 #include "app/gamecontroller.h"
 #include <QApplication>
 #include <QComboBox>
@@ -29,6 +31,11 @@
 #include <QVariantAnimation>
 #include <QPointer>
 #include <QIcon>
+#include <QPinchGesture>
+#include <QGestureEvent>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <cmath>
 
 /** @brief Сохраняет маршрут касаний для диагностики автоматических тестов без реального экрана. */
 class TouchTrace : public QObject
@@ -69,10 +76,50 @@ private slots:
     void pieceCountLimits();
     /** @brief Проверяет музейные ресурсы, готовые сложности и сохранение отключённого движения. */
     void expeditionControls();
+    /** @brief Проверяет первый показ для изображения, закрытие, повторное открытие и смену снимка. */
+    void helpFirstGameAndReopen();
+    /** @brief Проверяет прокрутку, фокус, отмену переноса и мгновенное отключение анимации подсказки. */
+    void helpLayoutAndMotion();
+    /** @brief Задаёт завершённое, отключённое и прерванное прокруткой появление правил. */
+    void helpScrollKeepsText_data();
+    /** @brief Сравнивает текст после прокрутки вниз/вверх с отрисовкой без эффектов прозрачности. */
+    void helpScrollKeepsText();
+    /** @brief Проверяет первый показ правил после отменённой подготовки нового изображения. */
+    void helpAfterCancelledPreparation();
+    /** @brief Проверяет повторное появление анимации и сброс прокрутки при открытии памятки. */
+    void helpReopensAfterScroll();
     /** @brief Собирает пазл мышью и проверяет повтор, новую геометрию и возврат. */
     void mouseCompletesAndRestarts();
     /** @brief Проверяет перенос пальцем без дублирования мышью. */
     void touchPlacesPiece();
+    /** @brief Проверяет двойной клик, направление, полный оборот и запрет поворота закреплённой детали. */
+    void mouseRotatesPiece();
+    /** @brief Задаёт направления и переходы через полный оборот для визуального поворота. */
+    void rotationAnimation_data();
+    /** @brief Проверяет промежуточный угол, неизменный центр, направление и точное завершение поворота. */
+    void rotationAnimation();
+    /** @brief Проверяет зелёные пиксели вихря и отсутствие его влияния на выбор детали. */
+    void rotationVortexRendering();
+    /** @brief Проверяет быстрые команды, захват во время поворота и отключение движения. */
+    void rotationRetargetAndDrag();
+    /** @brief Проверяет удаление вращающихся деталей при повторе и уничтожении сцены. */
+    void rotationEffectsLifetime();
+    /** @brief Проверяет закрепление и завершение игры во время визуального доворачивания. */
+    void rotationDuringPlacement();
+    /** @brief Задаёт направления реального вращения двумя пальцами. */
+    void pinchRotatesPiece_data();
+    /** @brief Проверяет распознавание касаний, шаг вращения и отсутствие отпускания после жеста. */
+    void pinchRotatesPiece();
+    /** @brief Задаёт направления полного оборота двумя пальцами. */
+    void pinchFullTurn_data();
+    /** @brief Проверяет переход угла через ±180° реальными касаниями без ложного отпускания детали. */
+    void pinchFullTurn();
+    /** @brief Проверяет порог pinch, дрожание, разворот и отсутствие масштабирования. */
+    void pinchThresholdAndCancellation();
+    /** @brief Задаёт ненулевые углы для проверки точки захвата. */
+    void rotatedDrag_data();
+    /** @brief Проверяет захват вне центра, увеличение и возврат повёрнутой миниатюры. */
+    void rotatedDrag();
     /** @brief Проверяет дополнительные пальцы и отмену касания. */
     void touchCancellationAndExtraFinger();
     /** @brief Проверяет восстановление детали при потере активности окна. */
@@ -81,6 +128,10 @@ private slots:
     void fileDialogAndErrors();
     /** @brief Проверяет доступность большого пазла, масштаб и сохранение позиций при resize. */
     void zoomResizeAndLargeCount();
+    /** @brief Задаёт разворачивание окна и полноэкранный режим с разными способами обзора. */
+    void windowStateResizesWorkspace_data();
+    /** @brief Проверяет вписывание поля и лотка при разворачивании, включая экран меньше окна. */
+    void windowStateResizesWorkspace();
     /** @brief Проверяет долю игрового поля, точку захвата миниатюры и возврат в лоток. */
     void compactTrayInteraction();
     /** @brief Проверяет прозрачные выемки, выбор по контуру и правильные пиксели текстурной заливки. */
@@ -107,8 +158,9 @@ private slots:
     void cancelsPreparation();
 private:
     /** @brief Выбирает встроенную фотографию действиями пользователя и открывает пазл.
-     * @param window Окно. @param count Запрошенное количество, ограничиваемое допустимым диапазоном. */
-    void prepare(MainWindow &window, int count = 4);
+     * @param window Окно. @param count Запрошенное количество, ограничиваемое допустимым диапазоном.
+     * @param dismissHelp Закрыть автоматически показанные правила перед проверкой игрового ввода. */
+    void prepare(MainWindow &window, int count = 4, bool dismissHelp = true);
     /** @brief Переносит одну деталь мышью. @param window Окно. @param id Номер детали. */
     void mousePlace(MainWindow &window, int id);
     QPointingDevice *m_device = nullptr; ///< Виртуальное устройство принадлежит QApplication.
@@ -134,7 +186,7 @@ void MainWindowTest::initTestCase()
     m_device = QTest::createTouchDevice();
     m_device->setParent(qApp);
 }
-void MainWindowTest::prepare(MainWindow &window, int count)
+void MainWindowTest::prepare(MainWindow &window, int count, bool dismissHelp)
 {
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
@@ -157,15 +209,30 @@ void MainWindowTest::prepare(MainWindow &window, int count)
     QCOMPARE(number->value(), expected);
     QTest::mouseClick(start, Qt::LeftButton, {}, {}, 0);
     QTRY_COMPARE(window.state(), AppController::State::Playing);
+    auto *help = window.findChild<GameHelpDialog *>();
+    QVERIFY(help);
+    QTRY_VERIFY(help->isVisible());
+    if (dismissHelp) {
+        QTest::mouseClick(help->findChild<QPushButton *>("helpUnderstoodButton"), Qt::LeftButton);
+        QTRY_VERIFY(!help->isVisible());
+        QVERIFY(QTest::qWaitForWindowActive(&window));
+    }
     auto *view = window.findChild<PuzzleView *>();
     QVERIFY(view);
     view->fitAll();
+    // Эти сценарии проверяют перенос и эффекты; вращение отдельно проверяется событиями ввода.
+    auto *game = window.findChild<GameController *>();
+    view->puzzleScene()->setReducedMotion(true);
+    for (const auto &piece : game->model()->pieces())
+        game->rotatePiece(piece.id, -piece.rotation / 90);
+    view->puzzleScene()->setReducedMotion(window.findChild<QCheckBox *>("reducedMotionCheckBox")->isChecked());
 }
 void MainWindowTest::mousePlace(MainWindow &window, int id)
 {
     auto *view = window.findChild<PuzzleView *>();
     auto *model = window.findChild<GameController *>()->model();
     const PuzzlePiece piece = model->pieces().at(id);
+    view->puzzleScene()->pieceItem(id)->setZValue(3);
     const QPointF offset = QRectF(QPointF(), piece.source.size()).center();
     const QPoint start = view->mapFromScene(view->puzzleScene()->pieceItem(piece.id)->mapToScene(offset));
     const QPoint end = view->mapFromScene(QPointF(piece.source.topLeft()) + offset);
@@ -256,6 +323,220 @@ void MainWindowTest::expeditionControls()
         QVERIFY(window.rect().contains(QRect(control->mapTo(&window, QPoint()), control->size())));
     }
 }
+void MainWindowTest::helpFirstGameAndReopen()
+{
+    MainWindow window;
+    prepare(window, 4, false);
+    auto *help = window.findChild<GameHelpDialog *>();
+    auto *understood = help->findChild<QPushButton *>("helpUnderstoodButton");
+    auto *button = window.findChild<QPushButton *>("howToPlayButton");
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    QVERIFY(view->toolTip().isEmpty());
+    QVERIFY(help->isModal());
+    QTRY_VERIFY(understood->hasFocus());
+    QSignalSpy progress(model, &PuzzleModel::progressChanged);
+    QTest::mouseClick(understood, Qt::LeftButton);
+    QTRY_VERIFY(!help->isVisible());
+    QTest::mouseClick(button, Qt::LeftButton);
+    QTRY_VERIFY(help->isVisible());
+    QCOMPARE(window.findChildren<GameHelpDialog *>().size(), 1);
+    QTest::keyClick(understood, Qt::Key_Return);
+    QTRY_VERIFY(!help->isVisible());
+    QCOMPARE(progress.size(), 0);
+    for (const char *name : {"restartButton", "regenerateButton"}) {
+        QTest::mouseClick(window.findChild<QPushButton *>(name), Qt::LeftButton);
+        QTRY_COMPARE(window.state(), AppController::State::Playing);
+        QVERIFY(!help->isVisible());
+    }
+    auto *back = window.findChild<QPushButton *>("backButton");
+    auto *start = window.findChild<QPushButton *>("startButton");
+    auto *samples = window.findChild<QComboBox *>("sampleImagesCombo");
+    const QString original = samples->currentData().toString();
+    QTest::mouseClick(back, Qt::LeftButton);
+    window.loadImage(original);
+    QTRY_VERIFY(start->isEnabled());
+    QTest::mouseClick(start, Qt::LeftButton);
+    QTRY_COMPARE(window.state(), AppController::State::Playing);
+    QVERIFY(!help->isVisible());
+    QTest::mouseClick(back, Qt::LeftButton);
+    // Ошибка чтения оставляет прежнюю фотографию и не создаёт новую идентичность подсказки.
+    window.loadImage(QStringLiteral(":/missing-help-image.jpg"));
+    QTRY_VERIFY(start->isEnabled());
+    QTest::mouseClick(start, Qt::LeftButton);
+    QTRY_COMPARE(window.state(), AppController::State::Playing);
+    QVERIFY(!help->isVisible());
+    QTest::mouseClick(back, Qt::LeftButton);
+    samples->setCurrentIndex(2);
+    QTest::mouseClick(window.findChild<QPushButton *>("sampleLoadButton"), Qt::LeftButton);
+    QTRY_VERIFY(start->isEnabled());
+    QTest::mouseClick(start, Qt::LeftButton);
+    QTRY_COMPARE(window.state(), AppController::State::Playing);
+    QTRY_VERIFY(help->isVisible());
+    // Возврат программным действием закрывает карточку и её анимации до смены страницы.
+    window.findChild<GameController *>()->cancel();
+    QVERIFY(!help->isVisible());
+    window.loadImage(original);
+    QTRY_VERIFY(start->isEnabled());
+    QTest::mouseClick(start, Qt::LeftButton);
+    QTRY_COMPARE(window.state(), AppController::State::Playing);
+    QVERIFY(!help->isVisible());
+}
+
+void MainWindowTest::helpLayoutAndMotion()
+{
+    MainWindow window;
+    auto *motion = window.findChild<QCheckBox *>("reducedMotionCheckBox");
+    const bool previous = motion->isChecked();
+    const auto restore = qScopeGuard([&] { motion->setChecked(previous); });
+    motion->setChecked(false);
+    prepare(window, 4, false);
+    auto *help = window.findChild<GameHelpDialog *>();
+    auto *animation = help->findChild<QParallelAnimationGroup *>("helpRevealAnimation");
+    auto *understood = help->findChild<QPushButton *>("helpUnderstoodButton");
+    QVERIFY(animation);
+    QCOMPARE(animation->state(), QAbstractAnimation::Running);
+    motion->setChecked(true);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    for (auto *effect : help->findChildren<QGraphicsOpacityEffect *>())
+        QCOMPARE(effect->opacity(), 1.0);
+    QVERIFY(help->width() <= help->screen()->availableGeometry().width());
+    QVERIFY(help->height() <= help->screen()->availableGeometry().height());
+    QVERIFY(help->rect().contains(QRect(understood->mapTo(help, QPoint()), understood->size())));
+    QTest::mouseClick(understood, Qt::LeftButton);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    auto *item = view->puzzleScene()->pieceItem(0);
+    item->setZValue(3);
+    const PuzzlePiece original = model->pieces().front();
+    const QPoint at = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    QTest::mousePress(view->viewport(), Qt::LeftButton, {}, at, 0);
+    QCOMPARE(item->scale(), 1.0);
+    window.findChild<GamePage *>()->showHelp();
+    QVERIFY(help->isVisible());
+    QCOMPARE(item->pos(), original.position);
+    QCOMPARE(item->scale(), original.scale);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QTest::mouseClick(understood, Qt::LeftButton);
+    motion->setChecked(false);
+    QTest::mouseClick(window.findChild<QPushButton *>("howToPlayButton"), Qt::LeftButton);
+    QTRY_COMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QVERIFY(help->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("help-preview.png")));
+    // Компактная карточка сохраняет доступную кнопку и позволяет добраться до последнего шага прокруткой.
+    help->resize(520, 380);
+    auto *scroll = help->findChild<QScrollArea *>("helpScrollArea");
+    auto *last = help->findChild<QWidget *>("helpStep4");
+    scroll->ensureWidgetVisible(last);
+    QCoreApplication::processEvents();
+    QVERIFY(scroll->viewport()->rect().intersects(QRect(last->mapTo(scroll->viewport(), QPoint()), last->size())));
+    QVERIFY(help->rect().contains(QRect(understood->mapTo(help, QPoint()), understood->size())));
+    QVERIFY(help->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("help-preview-compact.png")));
+    QTest::mouseClick(understood, Qt::LeftButton);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+}
+
+void MainWindowTest::helpScrollKeepsText_data()
+{
+    QTest::addColumn<bool>("reduced");
+    QTest::addColumn<bool>("interrupt");
+    QTest::newRow("after-reveal") << false << false;
+    QTest::newRow("reduced-motion") << true << false;
+    QTest::newRow("during-reveal") << false << true;
+}
+
+void MainWindowTest::helpScrollKeepsText()
+{
+    QFETCH(bool, reduced);
+    QFETCH(bool, interrupt);
+    MainWindow window;
+    prepare(window);
+    auto *help = window.findChild<GameHelpDialog *>();
+    help->setReducedMotion(reduced);
+    QTest::mouseClick(window.findChild<QPushButton *>("howToPlayButton"), Qt::LeftButton);
+    help->resize(520, 380);
+    auto *scroll = help->findChild<QScrollArea *>("helpScrollArea");
+    auto *bar = scroll->verticalScrollBar();
+    auto *animation = help->findChild<QParallelAnimationGroup *>("helpRevealAnimation");
+    QTRY_VERIFY(bar->maximum() > 0);
+    if (interrupt) {
+        // Фиксируем промежуточную прозрачность, чтобы проверка не зависела от скорости машины.
+        animation->pause();
+        animation->setCurrentTime(100);
+        bar->setValue(bar->maximum() / 2);
+        QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    } else {
+        QTRY_COMPARE(animation->state(), QAbstractAnimation::Stopped);
+    }
+    // Неполные шаги заставляют QScrollArea переносить уже нарисованные пиксели и дорисовывать открывшиеся полосы.
+    const auto effects = help->findChildren<QGraphicsOpacityEffect *>();
+    for (int position : {bar->maximum(), bar->maximum() / 2, 0, bar->maximum(), 0}) {
+        bar->setValue(position);
+        QCoreApplication::processEvents();
+        const QImage actual = scroll->viewport()->grab().toImage();
+        QVector<bool> enabled;
+        for (auto *effect : effects) {
+            enabled.append(effect->isEnabled());
+            effect->setEnabled(false);
+        }
+        const QImage reference = scroll->viewport()->grab().toImage();
+        for (int i = 0; i < effects.size(); ++i)
+            effects.at(i)->setEnabled(enabled.at(i));
+        QCOMPARE(actual, reference);
+    }
+    QCOMPARE(window.findChild<GameController *>()->model()->placedCount(), 0);
+    QTest::mouseClick(help->findChild<QPushButton *>("helpUnderstoodButton"), Qt::LeftButton);
+}
+
+void MainWindowTest::helpAfterCancelledPreparation()
+{
+    MainWindow window;
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    window.findChild<QComboBox *>("sampleImagesCombo")->setCurrentIndex(1);
+    QTest::mouseClick(window.findChild<QPushButton *>("sampleLoadButton"), Qt::LeftButton);
+    auto *start = window.findChild<QPushButton *>("startButton");
+    auto *help = window.findChild<GameHelpDialog *>();
+    QTRY_VERIFY(start->isEnabled());
+    QTest::mouseClick(start, Qt::LeftButton, {}, {}, 0);
+    QCOMPARE(window.state(), AppController::State::Preparing);
+    window.findChild<GameController *>()->cancel();
+    QCoreApplication::processEvents();
+    QCOMPARE(window.state(), AppController::State::Configuring);
+    QVERIFY(!help->isVisible());
+    QTest::mouseClick(start, Qt::LeftButton, {}, {}, 0);
+    QTRY_COMPARE(window.state(), AppController::State::Playing);
+    QTRY_VERIFY(help->isVisible());
+    QTest::mouseClick(help->findChild<QPushButton *>("helpUnderstoodButton"), Qt::LeftButton);
+}
+
+void MainWindowTest::helpReopensAfterScroll()
+{
+    MainWindow window;
+    prepare(window);
+    auto *help = window.findChild<GameHelpDialog *>();
+    help->setReducedMotion(false);
+    auto *button = window.findChild<QPushButton *>("howToPlayButton");
+    auto *understood = help->findChild<QPushButton *>("helpUnderstoodButton");
+    auto *animation = help->findChild<QParallelAnimationGroup *>("helpRevealAnimation");
+    QTest::mouseClick(button, Qt::LeftButton);
+    QTRY_COMPARE(animation->state(), QAbstractAnimation::Stopped);
+    help->resize(520, 380);
+    auto *bar = help->findChild<QScrollArea *>("helpScrollArea")->verticalScrollBar();
+    QTRY_VERIFY(bar->maximum() > 0);
+    bar->setValue(bar->maximum());
+    QTest::mouseClick(understood, Qt::LeftButton);
+    QTest::mouseClick(button, Qt::LeftButton);
+    QCOMPARE(bar->value(), 0);
+    QCOMPARE(animation->state(), QAbstractAnimation::Running);
+    bar->setValue(1);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    for (auto *effect : help->findChildren<QGraphicsOpacityEffect *>()) {
+        QCOMPARE(effect->opacity(), 1.0);
+        QVERIFY(!effect->isEnabled());
+    }
+    QTest::mouseClick(understood, Qt::LeftButton);
+}
+
 void MainWindowTest::mouseCompletesAndRestarts()
 {
     MainWindow window;
@@ -292,6 +573,7 @@ void MainWindowTest::touchPlacesPiece()
     auto *view = window.findChild<PuzzleView *>();
     auto *model = window.findChild<GameController *>()->model();
     const auto piece = model->pieces().front();
+    view->puzzleScene()->pieceItem(0)->setZValue(3);
     const QPointF offset = QRectF(QPointF(), piece.source.size()).center();
     const QPoint start = view->mapFromScene(view->puzzleScene()->pieceItem(piece.id)->mapToScene(offset));
     const QPoint end = view->mapFromScene(QPointF(piece.source.topLeft()) + offset);
@@ -310,6 +592,431 @@ void MainWindowTest::touchPlacesPiece()
     QCOMPARE(model->placedCount(), 1);
     QCOMPARE(progress.size(), 1);
 }
+
+void MainWindowTest::mouseRotatesPiece()
+{
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    auto *item = view->puzzleScene()->pieceItem(0);
+    item->setZValue(3);
+    const int initial = model->pieces().front().rotation;
+    QSignalSpy drops(view, &PuzzleView::pieceDropped);
+    for (int step = 1; step <= 4; ++step) {
+        const QPoint at = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+        const qreal scale = item->scale();
+        QTest::mouseDClick(view->viewport(), Qt::LeftButton, {}, at, 0);
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, at, 0);
+        QCOMPARE(model->pieces().front().rotation, (initial + step * 90) % 360);
+        QTRY_COMPARE(item->findChild<QVariantAnimation *>("rotationAnimation")->state(), QAbstractAnimation::Stopped);
+        const QRectF expected = model->pieces().front().boundsAtScale(item->scale()).translated(item->pos());
+        QVERIFY(QLineF(item->sceneBoundingRect().topLeft(), expected.topLeft()).length() < 0.001);
+        QVERIFY(QLineF(item->sceneBoundingRect().bottomRight(), expected.bottomRight()).length() < 0.001);
+        QVERIFY(item->scale() <= scale);
+        item->setZValue(3);
+    }
+    QCOMPARE(drops.size(), 0);
+    const QPoint at = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    QTest::mouseDClick(view->viewport(), Qt::RightButton, {}, at, 0);
+    QCOMPARE(model->pieces().front().rotation, initial);
+    mousePlace(window, 0);
+    item->finishPlacement();
+    const QPoint locked = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    QTest::mouseDClick(view->viewport(), Qt::LeftButton, {}, locked, 0);
+    QCOMPARE(model->pieces().front().rotation, 0);
+    QVERIFY(model->pieces().front().placed);
+}
+
+void MainWindowTest::rotationAnimation_data()
+{
+    QTest::addColumn<int>("initial");
+    QTest::addColumn<int>("turns");
+    QTest::newRow("clockwise") << 0 << 1;
+    QTest::newRow("counterclockwise-wrap") << 0 << -1;
+    QTest::newRow("clockwise-wrap") << 270 << 1;
+    QTest::newRow("half-turn-left") << 90 << -2;
+    QTest::newRow("three-turns-right") << 180 << 3;
+}
+
+void MainWindowTest::rotationAnimation()
+{
+    QFETCH(int, initial);
+    QFETCH(int, turns);
+    QImage image(400, 400, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    PuzzleModel model;
+    PuzzleScene scene(&model);
+    scene.setReducedMotion(true);
+    QVERIFY(model.start(image, 4, 42));
+    model.rotate(0, (initial - model.pieces().front().rotation) / 90);
+    auto *item = scene.pieceItem(0);
+    QVERIFY(model.place(0, model.boardRect().center() - item->boundingRect().center(), 0));
+    scene.setReducedMotion(false);
+    const QPointF center = item->mapToScene(item->boundingRect().center());
+    QSignalSpy progress(&model, &PuzzleModel::progressChanged);
+    QVERIFY(model.rotate(0, turns));
+    const int target = (initial + turns * 90 + 360) % 360;
+    QCOMPARE(model.pieces().front().rotation, target);
+    QCOMPARE(item->orientation(), target);
+    auto *animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    QCOMPARE(animation->state(), QAbstractAnimation::Running);
+    animation->pause();
+    animation->setCurrentTime(animation->duration() / 3);
+    const qreal delta = item->displayedAngle() - initial;
+    QVERIFY(delta * turns > 0);
+    QVERIFY(qAbs(delta) < qAbs(turns * 90));
+    QVERIFY(QLineF(item->mapToScene(item->boundingRect().center()), center).length() < 0.00001);
+    QVERIFY(item->rotationProgress() > 0 && item->rotationProgress() < 1);
+    QCOMPARE(scene.itemAt(center, QTransform()), static_cast<QGraphicsItem *>(item));
+    QCOMPARE(progress.size(), 0);
+    animation->setCurrentTime(animation->duration());
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QCOMPARE(item->displayedAngle(), qreal(target));
+    QCOMPARE(item->rotationProgress(), 0.0);
+    QCOMPARE(item->transform(), model.pieces().front().rotationTransform());
+    for (auto *child : item->childItems()) {
+        if (child->data(0).toString() == QStringLiteral("rotationVortex"))
+            QVERIFY(!child->isVisible());
+    }
+}
+
+void MainWindowTest::rotationVortexRendering()
+{
+    QImage image(160, 120, QImage::Format_RGB32);
+    image.fill(QColor(52, 52, 52));
+    PuzzlePiece piece;
+    piece.id = 0;
+    piece.source = image.rect();
+    piece.shape.addRoundedRect(QRectF(QPointF(), image.size()), 12, 12);
+    QGraphicsScene scene;
+    scene.setSceneRect(-40, -60, 240, 240);
+    auto *item = new PieceItem(image, piece);
+    scene.addItem(item);
+    item->rotateTo(90, 1, true);
+    auto *animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    animation->pause();
+    animation->setCurrentTime(animation->duration() / 5);
+    QGraphicsItem *vortex = nullptr;
+    for (auto *child : item->childItems())
+        if (child->data(0).toString() == QStringLiteral("rotationVortex")) vortex = child;
+    QVERIFY(vortex && vortex->isVisible());
+    QVERIFY(vortex->shape().isEmpty());
+    QImage rendered(480, 480, QImage::Format_ARGB32_Premultiplied);
+    rendered.fill(QColor("#F7F4EE"));
+    QPainter painter(&rendered);
+    scene.render(&painter, QRectF(rendered.rect()), scene.sceneRect());
+    painter.end();
+    int green = 0;
+    for (int y = 0; y < rendered.height(); ++y) {
+        for (int x = 0; x < rendered.width(); ++x) {
+            const QColor color = rendered.pixelColor(x, y);
+            green += color.alpha() > 40 && color.green() > color.red() + 20 && color.green() > color.blue() + 10;
+        }
+    }
+    QVERIFY(green > 150);
+    QVERIFY(rendered.save(QDir(QCoreApplication::applicationDirPath()).filePath("rotation-vortex-preview.png")));
+    item->finishRotation();
+    QVERIFY(!vortex->isVisible());
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+}
+
+void MainWindowTest::rotationRetargetAndDrag()
+{
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    auto *scene = view->puzzleScene();
+    scene->setReducedMotion(false);
+    auto *item = scene->pieceItem(0);
+    QVERIFY(model->place(0, model->boardRect().center() - item->boundingRect().center(), 0));
+    auto *animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    QVERIFY(model->rotate(0, 1));
+    animation->pause();
+    animation->setCurrentTime(animation->duration() / 4);
+    const qreal first = item->displayedAngle();
+    QVERIFY(model->rotate(0, 1));
+    QCOMPARE(item->displayedAngle(), first);
+    animation->pause();
+    animation->setCurrentTime(animation->duration() / 2);
+    QVERIFY(item->displayedAngle() > first && item->displayedAngle() < 180);
+    QVERIFY(model->rotate(0, -1));
+    animation->pause();
+    animation->setCurrentTime(animation->duration());
+    QCOMPARE(item->displayedAngle(), 90.0);
+    // Четыре быстрых команды должны показать полный оборот в выбранную сторону.
+    model->rotate(0, -1);
+    item->finishRotation();
+    for (int i = 0; i < 4; ++i) QVERIFY(model->rotate(0, 1));
+    animation->pause();
+    animation->setCurrentTime(animation->duration() * 3 / 4);
+    QVERIFY(item->displayedAngle() > 270 && item->displayedAngle() < 360);
+    animation->setCurrentTime(animation->duration());
+    QCOMPARE(item->displayedAngle(), 0.0);
+    QVERIFY(model->rotate(0, 1));
+    animation->pause();
+    animation->setCurrentTime(animation->duration() / 3);
+    const QPoint at = view->mapFromScene(item->mapToScene(item->boundingRect().center() + QPointF(3, 2)));
+    const QPointF grabbed = item->mapFromScene(view->mapToScene(at));
+    QTest::mousePress(view->viewport(), Qt::LeftButton, {}, at, 0);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QCOMPARE(item->displayedAngle(), 90.0);
+    QVERIFY((view->mapFromScene(item->mapToScene(grabbed)) - at).manhattanLength() <= 2);
+    view->cancelPointer();
+    QVERIFY(model->rotate(0, -1));
+    scene->setReducedMotion(true);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QCOMPARE(item->displayedAngle(), 0.0);
+    QVERIFY(model->rotate(0, -1));
+    QCOMPARE(item->displayedAngle(), 270.0);
+    QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
+    QCOMPARE(model->placedCount(), 0);
+}
+
+void MainWindowTest::rotationEffectsLifetime()
+{
+    QImage image(400, 400, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    PuzzleModel model;
+    auto *scene = new PuzzleScene(&model);
+    QVERIFY(model.start(image, 4, 42));
+    QPointer<PieceItem> item = scene->pieceItem(0);
+    QPointer<QVariantAnimation> animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    QVERIFY(model.rotate(0, 1));
+    model.restart(99);
+    QVERIFY(item.isNull());
+    QVERIFY(animation.isNull());
+    item = scene->pieceItem(0);
+    animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    QVERIFY(model.rotate(0, -1));
+    delete scene;
+    QVERIFY(item.isNull());
+    QVERIFY(animation.isNull());
+    QTest::qWait(450);
+}
+
+void MainWindowTest::rotationDuringPlacement()
+{
+    QImage image(400, 400, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    PuzzleModel model;
+    PuzzleScene scene(&model);
+    scene.setReducedMotion(true);
+    QVERIFY(model.start(image, 4, 42));
+    for (const auto &piece : model.pieces()) model.rotate(piece.id, -piece.rotation / 90);
+    auto *item = scene.pieceItem(0);
+    const QPointF centerPosition = model.boardRect().center() - item->boundingRect().center();
+    QVERIFY(model.place(0, centerPosition, 0));
+    scene.setReducedMotion(false);
+    QSignalSpy progress(&model, &PuzzleModel::progressChanged);
+    QSignalSpy completed(&model, &PuzzleModel::completed);
+    QVERIFY(model.rotate(0, 1));
+    auto *rotation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    rotation->pause();
+    rotation->setCurrentTime(rotation->duration() / 3);
+    QVERIFY(model.place(0, centerPosition, 0));
+    QVERIFY(!model.pieces().front().placed);
+    QCOMPARE(progress.size(), 0);
+    QVERIFY(model.rotate(0, -1));
+    rotation->pause();
+    rotation->setCurrentTime(rotation->duration() / 3);
+    QVERIFY(item->displayedAngle() > 0 && item->displayedAngle() < 90);
+    // Модель уже подтвердила ориентацию 0°; закрепление должно закончить визуальное доворачивание.
+    QVERIFY(model.place(0, model.pieces().front().source.topLeft(), 0));
+    QCOMPARE(item->displayedAngle(), 0.0);
+    QCOMPARE(rotation->state(), QAbstractAnimation::Stopped);
+    QVERIFY(item->locked());
+    for (auto *child : item->childItems())
+        if (child->data(0).toString() == QStringLiteral("rotationVortex")) QVERIFY(!child->isVisible());
+    auto *placement = item->findChild<QParallelAnimationGroup *>("placementAnimation");
+    QVERIFY(placement);
+    QCOMPARE(placement->state(), QAbstractAnimation::Running);
+    for (int id = 1; id < model.pieces().size(); ++id)
+        QVERIFY(model.place(id, model.pieces().at(id).source.topLeft(), 0));
+    QCOMPARE(progress.size(), 4);
+    QCOMPARE(completed.size(), 1);
+    scene.setReducedMotion(true);
+    QVERIFY(scene.completionPresented());
+    QVERIFY(!model.rotate(0, 1));
+    QCOMPARE(completed.size(), 1);
+}
+
+void MainWindowTest::pinchFullTurn_data() { pinchRotatesPiece_data(); }
+
+void MainWindowTest::pinchFullTurn()
+{
+    QFETCH(int, direction);
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    QImage image(480, 480, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    view->puzzleScene()->setReducedMotion(true);
+    QVERIFY(model->start(image, 4, 42));
+    model->rotate(0, -model->pieces().front().rotation / 90);
+    auto *item = view->puzzleScene()->pieceItem(0);
+    QVERIFY(model->place(0, model->boardRect().center() - item->boundingRect().center(), 0));
+    view->puzzleScene()->setReducedMotion(false);
+    view->fitAll();
+    const QPoint center = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    window.move(window.pos() + window.screen()->geometry().center() - view->viewport()->mapToGlobal(center));
+    QCoreApplication::processEvents();
+    const auto at = [&](QPoint point) { return view->viewport()->mapTo(&window, point); };
+    QSignalSpy rotations(model, &PuzzleModel::pieceRotated);
+    QSignalSpy drops(view, &PuzzleView::pieceDropped);
+    auto sequence = QTest::touchEvent(window.windowHandle(), m_device, false);
+    sequence.press(0, at(center), window.windowHandle()).commit();
+    sequence.stationary(0).press(1, at(center + QPoint(50, 0)), window.windowHandle()).commit();
+    // Шаги по 45° проходят обе стороны разрыва угла QPinchGesture у ±180°.
+    for (int step = 1; step <= 8; ++step) {
+        const qreal angle = direction * step * 3.141592653589793 / 4;
+        const QPoint offset(qRound(50 * std::cos(angle)), qRound(50 * std::sin(angle)));
+        sequence.stationary(0).move(1, at(center + offset), window.windowHandle()).commit();
+    }
+    QCOMPARE(rotations.size(), 4);
+    for (const auto &arguments : rotations) QCOMPARE(arguments.at(1).toInt(), direction);
+    QCOMPARE(model->pieces().front().rotation, 0);
+    auto *animation = item->findChild<QVariantAnimation *>("rotationAnimation");
+    animation->pause();
+    animation->setCurrentTime(animation->duration() * 3 / 4);
+    QVERIFY(item->displayedAngle() * direction > 270);
+    animation->setCurrentTime(animation->duration());
+    QCOMPARE(item->displayedAngle(), 0.0);
+    sequence.stationary(0).release(1, at(center + QPoint(50, 0)), window.windowHandle()).commit();
+    sequence.release(0, at(center), window.windowHandle()).commit();
+    QCOMPARE(drops.size(), 0);
+    QCOMPARE(model->placedCount(), 0);
+}
+
+void MainWindowTest::pinchRotatesPiece_data()
+{
+    QTest::addColumn<int>("direction");
+    QTest::newRow("clockwise") << 1;
+    QTest::newRow("counterclockwise") << -1;
+}
+
+void MainWindowTest::pinchRotatesPiece()
+{
+    QFETCH(int, direction);
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    auto *item = view->puzzleScene()->pieceItem(0);
+    // Центр поля оставляет запас для обоих пальцев независимо от случайной позиции в лотке.
+    QVERIFY(model->place(0, model->boardRect().center() - item->boundingRect().center(), 0));
+    item->setZValue(3);
+    const int initial = model->pieces().front().rotation;
+    const QPoint center = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    // Qt ищет получателя pinch через экранную hotSpot. При DPR=2 виртуальный экран
+    // offscreen меньше окна: переносим точку касания в его видимую часть.
+    window.move(window.pos() + window.screen()->geometry().center() - view->viewport()->mapToGlobal(center));
+    QCoreApplication::processEvents();
+    const auto at = [&](QPoint point) { return view->viewport()->mapTo(&window, point); };
+    QSignalSpy drops(view, &PuzzleView::pieceDropped);
+    auto sequence = QTest::touchEvent(window.windowHandle(), m_device, false);
+    sequence.press(0, at(center), window.windowHandle()).commit();
+    sequence.stationary(0).press(1, at(center + QPoint(50, 0)), window.windowHandle()).commit();
+    sequence.stationary(0).move(1, at(center + QPoint(35, direction * 35)), window.windowHandle()).commit();
+    sequence.stationary(0).move(1, at(center + QPoint(0, direction * 50)), window.windowHandle()).commit();
+    QCOMPARE(model->pieces().front().rotation, (initial + direction * 90 + 360) % 360);
+    sequence.stationary(0).release(1, at(center + QPoint(0, direction * 50)), window.windowHandle()).commit();
+    sequence.move(0, at(center + QPoint(-10, 0)), window.windowHandle()).commit();
+    sequence.release(0, at(center + QPoint(-10, 0)), window.windowHandle()).commit();
+    QCOMPARE(drops.size(), 0);
+    QCOMPARE(model->placedCount(), 0);
+    QCOMPARE(item->pos(), model->pieces().front().position);
+}
+
+void MainWindowTest::pinchThresholdAndCancellation()
+{
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    auto *item = view->puzzleScene()->pieceItem(0);
+    QVERIFY(model->place(0, model->boardRect().center() - item->boundingRect().center(), 0));
+    item->setZValue(3);
+    const QPoint center = view->mapFromScene(item->mapToScene(item->boundingRect().center()));
+    const qreal scale = view->transform().m11();
+    const int initial = model->pieces().front().rotation;
+    QPinchGesture pinch;
+    pinch.setCenterPoint(view->viewport()->mapToGlobal(center));
+    // Событие несёт также масштаб: вращение детали не должно менять обзор.
+    const auto update = [&](qreal last, qreal angle) {
+        pinch.setLastRotationAngle(last);
+        pinch.setRotationAngle(angle);
+        pinch.setScaleFactor(2);
+        pinch.setChangeFlags(QPinchGesture::RotationAngleChanged | QPinchGesture::ScaleFactorChanged);
+        QGestureEvent gesture({&pinch});
+        QCoreApplication::sendEvent(view->viewport(), &gesture);
+    };
+    update(0, 15);
+    QCOMPARE(model->pieces().front().rotation, initial);
+    update(15, 65);
+    QCOMPARE(model->pieces().front().rotation, (initial + 90) % 360);
+    update(65, 61);
+    QCOMPARE(model->pieces().front().rotation, (initial + 90) % 360);
+    update(61, 0);
+    QCOMPARE(model->pieces().front().rotation, initial);
+    QCOMPARE(view->transform().m11(), scale);
+    QTouchEvent cancel(QEvent::TouchCancel, m_device);
+    QCoreApplication::sendEvent(view->viewport(), &cancel);
+    mousePlace(window, 0);
+    QVERIFY(model->pieces().front().placed);
+}
+
+void MainWindowTest::rotatedDrag_data()
+{
+    QTest::addColumn<int>("rotation");
+    for (int angle : {90, 180, 270})
+        QTest::newRow(qPrintable(QString::number(angle))) << angle;
+}
+
+void MainWindowTest::rotatedDrag()
+{
+    QFETCH(int, rotation);
+    MainWindow window;
+    prepare(window);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    // Квадратное изображение оставляет на поле место для детали во всех ориентациях.
+    QImage image(640, 640, QImage::Format_RGB32);
+    image.fill(Qt::green);
+    QVERIFY(model->start(image, 4, 42));
+    model->rotate(0, (rotation - model->pieces().front().rotation) / 90);
+    QCOMPARE(model->pieces().front().rotation, rotation);
+    auto *item = view->puzzleScene()->pieceItem(0);
+    item->finishRotation();
+    item->setZValue(3);
+    const PuzzlePiece original = model->pieces().front();
+    const QPointF local = item->boundingRect().center() + QPointF(3, 2);
+    QVERIFY(item->contains(local));
+    const QPoint start = view->mapFromScene(item->mapToScene(local));
+    const QPointF grabbed = item->mapFromScene(view->mapToScene(start));
+    QTest::mousePress(view->viewport(), Qt::LeftButton, {}, start, 0);
+    QCOMPARE(item->scale(), 1.0);
+    QVERIFY((view->mapFromScene(item->mapToScene(grabbed)) - start).manhattanLength() <= 2);
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, start, 0);
+    QCOMPARE(model->pieces().front().rotation, rotation);
+    QCOMPARE(item->scale(), original.scale);
+    QVERIFY(QLineF(item->pos(), original.position).length() < 0.001);
+    QCOMPARE(model->placedCount(), 0);
+    // На поле повёрнутая деталь остаётся свободной; её настоящий контур следует за точкой захвата.
+    const QPoint end = view->mapFromScene(model->boardRect().center()
+        + original.rotationTransform().map(grabbed) - item->boundingRect().center());
+    item->setZValue(3);
+    QTest::mousePress(view->viewport(), Qt::LeftButton, {}, start, 0);
+    QTest::mouseMove(view->viewport(), end, 0);
+    QVERIFY((view->mapFromScene(item->mapToScene(grabbed)) - end).manhattanLength() <= 2);
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, end, 0);
+    QCOMPARE(item->scale(), 1.0);
+    QVERIFY(!model->pieces().front().placed);
+    view->cancelPointer();
+    QCOMPARE(item->transform(), original.rotationTransform());
+}
 void MainWindowTest::touchCancellationAndExtraFinger()
 {
     MainWindow window;
@@ -318,20 +1025,20 @@ void MainWindowTest::touchCancellationAndExtraFinger()
     auto *view = window.findChild<PuzzleView *>();
     auto *model = window.findChild<GameController *>()->model();
     const auto original = model->pieces().front();
+    view->puzzleScene()->pieceItem(0)->setZValue(3);
     const QPointF offset = QRectF(QPointF(), original.source.size()).center();
     const QPoint start = view->mapFromScene(view->puzzleScene()->pieceItem(original.id)->mapToScene(offset));
     const QPoint end = view->mapFromScene(QPointF(original.source.topLeft()) + offset);
     const auto windowPoint = [view, &window](QPoint point) { return view->viewport()->mapTo(&window, point); };
     auto sequence = QTest::touchEvent(window.windowHandle(), m_device, false);
     sequence.press(0, windowPoint(start), window.windowHandle()).commit();
-    const QPointF draggingPosition = view->puzzleScene()->pieceItem(0)->pos();
     QCOMPARE(view->puzzleScene()->pieceItem(0)->scale(), 1.0);
     sequence.stationary(0).press(1, windowPoint(QPoint(10, 10)), window.windowHandle()).commit();
     sequence.stationary(0).move(1, windowPoint(end), window.windowHandle()).commit();
-    QCOMPARE(view->puzzleScene()->pieceItem(0)->pos(), draggingPosition);
+    QCOMPARE(view->puzzleScene()->pieceItem(0)->pos(), original.position);
     sequence.stationary(0).release(1, windowPoint(end), window.windowHandle()).commit();
     sequence.move(0, windowPoint(end), window.windowHandle()).commit();
-    QVERIFY(view->puzzleScene()->pieceItem(0)->pos() != original.position);
+    QCOMPARE(view->puzzleScene()->pieceItem(0)->pos(), original.position);
     QTouchEvent cancel(QEvent::TouchCancel, m_device);
     QCoreApplication::sendEvent(view->viewport(), &cancel);
     QCOMPARE(view->puzzleScene()->pieceItem(0)->pos(), original.position);
@@ -402,8 +1109,10 @@ void MainWindowTest::zoomResizeAndLargeCount()
     const qreal scale = view->transform().m11();
     QTest::mouseClick(window.findChild<QPushButton *>("zoomInButton"), Qt::LeftButton);
     QVERIFY(view->transform().m11() > scale);
+    const qreal manualScale = view->transform().m11();
     window.resize(640, 480);
     QCoreApplication::processEvents();
+    QCOMPARE(view->transform().m11(), manualScale);
     for (int i = 0; i < original.size(); ++i)
         QCOMPARE(model->pieces().at(i).position, original.at(i).position);
     QTest::mouseClick(window.findChild<QPushButton *>("fitButton"), Qt::LeftButton);
@@ -411,6 +1120,65 @@ void MainWindowTest::zoomResizeAndLargeCount()
     QVERIFY(window.rect().contains(QRect(back->mapTo(&window, QPoint()), back->size())));
     QTest::mouseClick(back, Qt::LeftButton);
     QCOMPARE(window.state(), AppController::State::Configuring);
+}
+void MainWindowTest::windowStateResizesWorkspace_data()
+{
+    QTest::addColumn<bool>("fullScreen");
+    QTest::addColumn<int>("interaction");
+    for (bool fullScreen : {false, true}) {
+        const QByteArray mode = fullScreen ? "fullscreen-" : "maximized-";
+        QTest::newRow((mode + "fit").constData()) << fullScreen << 0;
+        QTest::newRow((mode + "zoom").constData()) << fullScreen << 1;
+        QTest::newRow((mode + "pan").constData()) << fullScreen << 2;
+    }
+}
+void MainWindowTest::windowStateResizesWorkspace()
+{
+    QFETCH(bool, fullScreen);
+    QFETCH(int, interaction);
+    MainWindow window;
+    window.resize(700, 500);
+    prepare(window, 20);
+    auto *view = window.findChild<PuzzleView *>();
+    auto *model = window.findChild<GameController *>()->model();
+    const QSize normalSize = window.size();
+    const QSize normalViewport = view->viewport()->size();
+    const QRect normalBoard = view->mapFromScene(model->boardRect()).boundingRect();
+    const QRect normalTray = view->mapFromScene(model->trayRect()).boundingRect();
+    const auto pieces = model->pieces();
+    const QRect screen = fullScreen ? window.screen()->geometry() : window.screen()->availableGeometry();
+    // При большом DPR виртуальный экран может быть меньше минимального окна.
+    // Увеличение проверяем только при запасе под рамку; вписывание обязательно при любом размере.
+    const bool canGrow = screen.width() > normalSize.width() + 64 && screen.height() > normalSize.height() + 64;
+    if (interaction == 1) view->zoomIn();
+    if (fullScreen) window.showFullScreen();
+    else window.showMaximized();
+    QTRY_VERIFY(fullScreen ? window.isFullScreen() : window.isMaximized());
+    QCoreApplication::processEvents();
+    if (canGrow)
+        QTRY_VERIFY(view->viewport()->height() > normalViewport.height());
+    QTRY_VERIFY(view->viewport()->rect().contains(view->mapFromScene(model->boardRect()).boundingRect()));
+    QTRY_VERIFY(view->viewport()->rect().contains(view->mapFromScene(model->trayRect()).boundingRect()));
+    if (interaction == 1) {
+        view->zoomIn();
+    } else if (interaction == 2) {
+        // Пустой фон запускает панорамирование и отключает автоматическое вписывание.
+        QTest::mousePress(view->viewport(), Qt::LeftButton, {}, QPoint(4, 4));
+        QTest::mouseMove(view->viewport(), QPoint(14, 14));
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, QPoint(14, 14));
+    }
+    window.showNormal();
+    QTRY_COMPARE(window.size(), normalSize);
+    QTRY_COMPARE(view->viewport()->size(), normalViewport);
+    QTRY_COMPARE(view->mapFromScene(model->boardRect()).boundingRect(), normalBoard);
+    QTRY_COMPARE(view->mapFromScene(model->trayRect()).boundingRect(), normalTray);
+    QVERIFY(view->viewport()->rect().contains(normalBoard));
+    QVERIFY(view->viewport()->rect().contains(normalTray));
+    QCOMPARE(model->placedCount(), 0);
+    for (int id = 0; id < pieces.size(); ++id) {
+        QCOMPARE(model->pieces().at(id).position, pieces.at(id).position);
+        QCOMPARE(model->pieces().at(id).scale, pieces.at(id).scale);
+    }
 }
 void MainWindowTest::compactTrayInteraction()
 {
@@ -427,6 +1195,7 @@ void MainWindowTest::compactTrayInteraction()
     }
     auto *item = view->puzzleScene()->pieceItem(0);
     const QPointF oldPosition = item->pos();
+    item->setZValue(3);
     const qreal oldScale = item->scale();
     const QPointF offset(item->boundingRect().width() * 0.45, item->boundingRect().height() * 0.55);
     const QPoint start = view->mapFromScene(item->mapToScene(offset));
@@ -441,6 +1210,8 @@ void MainWindowTest::compactTrayInteraction()
     QVERIFY(QLineF(item->pos(), oldPosition).length() < 0.001);
     QVERIFY(!model->pieces().at(0).placed);
     const QPoint end = view->mapFromScene(QPointF(model->pieces().at(0).source.topLeft()) + grabbed);
+    // Подготовка теста выправляет случайные углы, поэтому соседние миниатюры могут перекрыться.
+    item->setZValue(3);
     QTest::mousePress(view->viewport(), Qt::LeftButton, {}, start, 0);
     QTest::mouseMove(view->viewport(), end, 0);
     QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, end, 0);
@@ -497,6 +1268,7 @@ void MainWindowTest::assemblyEffects()
     auto *view = window.findChild<PuzzleView *>();
     auto *scene = view->puzzleScene();
     auto *item = scene->pieceItem(0);
+    item->setZValue(3);
     const QPointF center = item->boundingRect().center();
     const QPoint start = view->mapFromScene(item->mapToScene(center));
     const QPointF grabbed = item->mapFromScene(view->mapToScene(start));
@@ -544,7 +1316,10 @@ void MainWindowTest::effectsCancellation()
     auto *motion = window.findChild<QCheckBox *>("reducedMotionCheckBox");
     motion->setChecked(false);
     QPointer<PieceItem> old = scene->pieceItem(0);
-    for (int id = 0; id < model->pieces().size(); ++id) game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    for (int id = 0; id < model->pieces().size(); ++id) {
+        game->rotatePiece(id, -model->pieces().at(id).rotation / 90);
+        game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    }
     QVERIFY(!scene->completionPresented());
     game->restart();
     QTRY_COMPARE(window.state(), AppController::State::Playing);
@@ -552,7 +1327,10 @@ void MainWindowTest::effectsCancellation()
     QTest::qWait(750);
     QVERIFY(!scene->completionPresented());
     QCOMPARE(model->placedCount(), 0);
-    for (int id = 0; id < model->pieces().size(); ++id) game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    for (int id = 0; id < model->pieces().size(); ++id) {
+        game->rotatePiece(id, -model->pieces().at(id).rotation / 90);
+        game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    }
     QTRY_VERIFY(scene->completionPresented());
     auto *animation = scene->findChild<QVariantAnimation *>("completionAnimation");
     QVERIFY(animation);
@@ -564,7 +1342,10 @@ void MainWindowTest::effectsCancellation()
     }
     game->restart();
     QTRY_COMPARE(window.state(), AppController::State::Playing);
-    for (int id = 0; id < model->pieces().size(); ++id) game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    for (int id = 0; id < model->pieces().size(); ++id) {
+        game->rotatePiece(id, -model->pieces().at(id).rotation / 90);
+        game->dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    }
     QVERIFY(scene->completionPresented());
     QCOMPARE(animation->state(), QAbstractAnimation::Stopped);
     for (auto *piece : scene->items()) {
@@ -592,6 +1373,7 @@ void MainWindowTest::touchCompletesWithEffects()
     QSignalSpy finished(view->puzzleScene(), &PuzzleScene::completionEffectsFinished);
     for (int id = 0; id < count; ++id) {
         auto *item = view->puzzleScene()->pieceItem(id);
+        item->setZValue(3);
         const QPointF offset = item->boundingRect().center();
         const QPoint start = view->mapFromScene(item->mapToScene(offset));
         const QPoint end = view->mapFromScene(QPointF(model->pieces().at(id).source.topLeft()) + offset);
@@ -653,8 +1435,10 @@ void MainWindowTest::completionGlowRendering()
     PuzzleModel model;
     PuzzleScene scene(&model);
     QVERIFY(model.start(original, 17, 42));
-    for (int id = 0; id < model.pieces().size(); ++id)
+    for (int id = 0; id < model.pieces().size(); ++id) {
+        model.rotate(id, -model.pieces().at(id).rotation / 90);
         QVERIFY(model.place(id, model.pieces().at(id).source.topLeft(), 0));
+    }
     QTRY_VERIFY(scene.completionPresented());
     auto *timeline = scene.findChild<QVariantAnimation *>("completionAnimation");
     QVERIFY(timeline);
@@ -711,8 +1495,10 @@ void MainWindowTest::effectsLifetime()
     QPointer<PieceItem> piece = scene->pieceItem(0);
     QSignalSpy finished(scene, &PuzzleScene::completionEffectsFinished);
     const int count = stage == 0 ? 1 : 4;
-    for (int id = 0; id < count; ++id)
+    for (int id = 0; id < count; ++id) {
+        model.rotate(id, -model.pieces().at(id).rotation / 90);
         QVERIFY(model.place(id, model.pieces().at(id).source.topLeft(), 0));
+    }
     if (stage == 2) QTRY_VERIFY(scene->completionPresented());
     else QVERIFY(!scene->completionPresented());
     delete scene;
@@ -740,7 +1526,10 @@ void MainWindowTest::keyboardAndLargeText()
     auto *number = window.findChild<QSpinBox *>("pieceCountSpinBox");
     auto *start = window.findChild<QPushButton *>("startButton");
     number->setFocus(); QTest::keyClick(number, Qt::Key_Tab);
-    QVERIFY(start->hasFocus());
+    QVERIFY2(start->hasFocus(), qPrintable(QStringLiteral("Focused widget: %1 (%2), active window: %3")
+        .arg(QApplication::focusWidget() ? QApplication::focusWidget()->objectName() : QStringLiteral("none"))
+        .arg(QApplication::focusWidget() ? QString::fromLatin1(QApplication::focusWidget()->metaObject()->className()) : QString())
+        .arg(QApplication::activeWindow() ? QApplication::activeWindow()->objectName() : QStringLiteral("none"))));
     QTest::keyClick(start, Qt::Key_Space);
     QTRY_COMPARE(window.state(), AppController::State::Playing);
 }

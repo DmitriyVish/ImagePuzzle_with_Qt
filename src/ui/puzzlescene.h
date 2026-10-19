@@ -29,6 +29,21 @@ public:
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) override;
     /** @brief Читает номер детали. @return id модели. */
     int id() const;
+    /** @brief Мгновенно задаёт ориентацию, отменяя поворот и вихрь.
+     * @param degrees Угол по часовой стрелке: 0, 90, 180 или 270. */
+    void setOrientation(int degrees);
+    /** @brief Читает подтверждённую ориентацию независимо от промежуточного кадра. @return Угол модели. */
+    int orientation() const;
+    /** @brief Читает промежуточный угол изображения. @return Угол в градусах, включая переход через полный оборот. */
+    qreal displayedAngle() const;
+    /** @brief Читает фазу появления и затухания вихря. @return Значение от 0 до 1; вне поворота — 0. */
+    qreal rotationProgress() const;
+    /** @brief Плавно поворачивает изображение с зелёным вихрем, продолжая быстрые повторные команды.
+     * @param degrees Новая ориентация модели. @param quarterTurns Подписанное число четвертей оборота.
+     * @param animate Разрешены ли движение и свечение; false задаёт ориентацию мгновенно. */
+    void rotateTo(int degrees, int quarterTurns, bool animate);
+    /** @brief Завершает визуальный поворот в ориентации модели и скрывает вихрь; модель не меняется. */
+    void finishRotation();
     /** @brief Меняет вид закреплённой детали. @param locked Признак закрепления. */
     void setLocked(bool locked);
     /** @brief Читает закрепление. @return true для детали, принятой моделью. */
@@ -42,15 +57,28 @@ public:
     void settleAt(QPointF target, bool animate);
     /** @brief Завершает текущую анимацию закреплённой детали без изменения состояния модели. */
     void finishPlacement();
+protected:
+    /** @brief Сохраняет центр поворота при изменении масштаба миниатюры.
+     * @param change Вид изменения Qt. @param value Значение Qt. @return Результат базового обработчика. */
+    QVariant itemChange(GraphicsItemChange change, const QVariant &value) override;
 private:
+    /** @brief Перестраивает матрицу вокруг масштабированного центра. @param degrees Промежуточный угол кадра. */
+    void applyOrientation(qreal degrees);
     QImage m_image; ///< Implicit sharing сохраняет единственный пиксельный буфер.
     QRect m_source; ///< Область исходного изображения.
     QPainterPath m_shape; ///< Тот же контур используется для рисования и hit testing.
     int m_id; ///< Номер детали.
+    int m_rotation = 0; ///< Ориентация; перенос центра в базовой матрице учитывает текущий scale().
+    qreal m_displayAngle = 0; ///< Угол текущего кадра, отделённый от дискретной ориентации модели.
+    qreal m_turnFrom = 0; ///< Угол начала текущего отрезка анимации.
+    qreal m_turnTarget = 0; ///< Непрерывная цель; сохраняет направление при переходе 270° → 0°.
+    qreal m_turnProgress = 0; ///< Фаза зелёного вихря.
     bool m_locked; ///< Влияет на контур детали.
     QPointF m_target; ///< Позиция, подтверждённая моделью.
     qreal m_glow = 0; ///< Интенсивность краткой подсветки.
     QParallelAnimationGroup *m_placement = nullptr; ///< Дочерняя QObject-анимация удаляется вместе с деталью.
+    QVariantAnimation *m_turnAnimation; ///< Единственная переиспользуемая анимация поворота принадлежит детали.
+    QGraphicsItem *m_vortex = nullptr; ///< Неинтерактивный дочерний ореол, удаляемый вместе с деталью.
 };
 
 /** @brief Отображает модель; не принимает игровых решений. */

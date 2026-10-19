@@ -12,6 +12,27 @@
 
 Q_LOGGING_CATEGORY(lcPuzzle, "imagepuzzle.puzzle")
 
+QTransform PuzzlePiece::rotationTransform() const
+{
+    const QPointF center = QRectF(QPointF(), source.size()).center();
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(rotation);
+    transform.translate(-center.x(), -center.y());
+    return transform;
+}
+
+QRectF PuzzlePiece::boundsAtScale(qreal atScale) const
+{
+    QSizeF size(source.size());
+    if (rotation % 180 != 0)
+        size.transpose();
+    // Центр исходного прямоугольника неизменен при повороте; начало контура может стать отрицательным.
+    const QPointF center = QRectF(QPointF(), source.size()).center() * atScale;
+    size *= atScale;
+    return QRectF(center - QPointF(size.width() / 2, size.height() / 2), size);
+}
+
 PuzzleModel::PuzzleModel(QObject *parent) : QObject(parent) {}
 const QImage &PuzzleModel::image() const { return m_image; }
 const QVector<PuzzlePiece> &PuzzleModel::pieces() const { return m_pieces; }
@@ -59,6 +80,9 @@ void PuzzleModel::shuffle(quint32 seed)
     if (order == previous && order.size() > 1)
         std::rotate(order.begin(), order.begin() + 1, order.end());
     m_order = order;
+    std::uniform_int_distribution<int> angle(0, 3);
+    for (PuzzlePiece &piece : m_pieces)
+        piece.rotation = angle(random) * 90;
     const qreal spacing = qMax(4.0, qMin(m_image.width(), m_image.height()) * 0.02);
     constexpr qreal initialScale = 0.42;
     qreal widest = 0;
@@ -75,7 +99,8 @@ void PuzzleModel::shuffle(quint32 seed)
         QVector<QPointF> positions(m_pieces.size());
         bool fits = true;
         for (int id : order) {
-            const QSizeF size = QSizeF(m_pieces.at(id).source.size()) * scale + QSizeF(padding, padding);
+            const QRectF bounds = m_pieces.at(id).boundsAtScale(scale);
+            const QSizeF size = bounds.size() + QSizeF(padding, padding);
             int best = -1;
             qreal score = std::numeric_limits<qreal>::max();
             for (int i = 0; i < free.size(); ++i) {
@@ -87,7 +112,7 @@ void PuzzleModel::shuffle(quint32 seed)
             }
             if (best < 0) { fits = false; break; }
             const QRectF used(free.at(best).topLeft(), size);
-            positions[id] = origin + used.topLeft();
+            positions[id] = origin + used.topLeft() - bounds.topLeft();
             QVector<QRectF> remaining;
             for (const QRectF &space : std::as_const(free)) {
                 if (!space.intersects(used)) { remaining.append(space); continue; }
@@ -114,13 +139,14 @@ void PuzzleModel::shuffle(quint32 seed)
             m_pieces[id].position = positions.at(id);
             m_pieces[id].placed = false;
             m_pieces[id].scale = scale;
-            bottom = qMax(bottom, positions.at(id).y() - origin.y() + m_pieces.at(id).source.height() * scale);
+            bottom = qMax(bottom, positions.at(id).y() - origin.y() + m_pieces.at(id).boundsAtScale(scale).bottom());
         }
         // Рамка лотка охватывает только занятую высоту, а не пустую область до нижнего края поля.
         m_tray.setHeight(qMin(qreal(m_image.height()), bottom + padding));
         break;
     }
-    qCDebug(lcPuzzle) << "Compact tray:" << m_tray.size() << "thumbnail scale:" << m_thumbnailScale;
+    qCDebug(lcPuzzle) << "Rotated compact tray, seed:" << seed << "size:" << m_tray.size()
+                      << "thumbnail scale:" << m_thumbnailScale;
     m_placed = 0;
 }
 
@@ -144,20 +170,24 @@ bool PuzzleModel::place(int id, QPointF position, qreal tolerance)
     const QPointF target = piece.source.topLeft();
     const QPointF center = position + QRectF(QPointF(), piece.source.size()).center();
     // Отпускание в лотке не должно закреплять соседнюю с ним угловую деталь при большом допуске.
-    const bool snaps = !m_tray.contains(center) && QLineF(position, target).length() <= tolerance;
+    const bool snaps = piece.rotation == 0 && !m_tray.contains(center) && QLineF(position, target).length() <= tolerance;
     qreal scale = 1.0;
     if (snaps)
         position = target;
     else {
         if (m_tray.contains(center)) {
-            scale = m_thumbnailScale;
-            const QSizeF size = QSizeF(piece.source.size()) * scale;
-            position = center - QPointF(size.width() / 2, size.height() / 2);
-            position.setX(qBound(m_tray.left(), position.x(), m_tray.right() - size.width()));
-            position.setY(qBound(m_tray.top(), position.y(), m_tray.bottom() - size.height()));
+            const QSizeF fullSize = piece.boundsAtScale(1).size();
+            scale = qMin(m_thumbnailScale, qMin(m_tray.width() / fullSize.width(), m_tray.height() / fullSize.height()));
+            const QRectF bounds = piece.boundsAtScale(scale);
+            position = center - QRectF(QPointF(), piece.source.size()).center() * scale;
+            // При точном заполнении лотка округление может поменять границы местами на долю пикселя.
+            const qreal left = m_tray.left() - bounds.left();
+            const qreal top = m_tray.top() - bounds.top();
+            position.setX(qBound(left, position.x(), qMax(left, m_tray.right() - bounds.right())));
+            position.setY(qBound(top, position.y(), qMax(top, m_tray.bottom() - bounds.bottom())));
         }
     }
-    if (!workspaceRect().contains(QRectF(position, QSizeF(piece.source.size()) * scale)))
+    if (!workspaceRect().adjusted(-1e-7, -1e-7, 1e-7, 1e-7).contains(piece.boundsAtScale(scale).translated(position)))
         return false;
     if (snaps) {
         piece.placed = true;
@@ -173,5 +203,31 @@ bool PuzzleModel::place(int id, QPointF position, qreal tolerance)
             emit completed();
         }
     }
+    return true;
+}
+
+bool PuzzleModel::rotate(int id, int quarterTurns)
+{
+    if (id < 0 || id >= m_pieces.size() || m_pieces.at(id).placed || quarterTurns % 4 == 0)
+        return false;
+    PuzzlePiece candidate = m_pieces.at(id);
+    const QRectF previous = candidate.boundsAtScale(candidate.scale).translated(candidate.position);
+    candidate.rotation = (candidate.rotation + (quarterTurns % 4) * 90 + 360) % 360;
+    const QRectF area = m_tray.contains(previous.center()) ? m_tray : workspaceRect();
+    // У края лотка поворот может потребовать уменьшения: длинная сторона не должна исчезнуть за рамкой.
+    const QSizeF fullSize = candidate.boundsAtScale(1).size();
+    const qreal nextScale = qMin(candidate.scale, qMin(area.width() / fullSize.width(), area.height() / fullSize.height()));
+    const QPointF center = QRectF(QPointF(), candidate.source.size()).center();
+    candidate.position += center * (candidate.scale - nextScale);
+    candidate.scale = nextScale;
+    const QRectF bounds = candidate.boundsAtScale(candidate.scale);
+    const qreal left = area.left() - bounds.left();
+    const qreal top = area.top() - bounds.top();
+    candidate.position.setX(qBound(left, candidate.position.x(), qMax(left, area.right() - bounds.right())));
+    candidate.position.setY(qBound(top, candidate.position.y(), qMax(top, area.bottom() - bounds.bottom())));
+    m_pieces[id] = candidate;
+    qCDebug(lcPuzzle) << "Piece rotated, id:" << id << "angle:" << candidate.rotation;
+    emit pieceChanged(id);
+    emit pieceRotated(id, quarterTurns % 4);
     return true;
 }

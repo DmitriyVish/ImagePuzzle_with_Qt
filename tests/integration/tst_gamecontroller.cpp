@@ -22,6 +22,8 @@ private slots:
     void restartRegenerateAndGuards();
     /** @brief Проверяет удаление контроллера до срабатывания его таймера. */
     void destructionDuringPreparation();
+    /** @brief Проверяет, что команды вращения проходят к модели только в состоянии Playing. */
+    void rotationStateGuards();
 private:
     /** @brief Создаёт небольшую рабочую фотографию. @return Непустое изображение. */
     static QImage image();
@@ -32,6 +34,46 @@ QImage GameControllerTest::image()
     QImage result(320, 240, QImage::Format_RGB32);
     result.fill(Qt::cyan);
     return result;
+}
+
+void GameControllerTest::rotationStateGuards()
+{
+    AppController flow;
+    GameController game(&flow);
+    auto *model = game.model();
+    QSignalSpy rotations(model, &PuzzleModel::pieceRotated);
+    game.rotatePiece(0, 1);
+    QCOMPARE(rotations.size(), 0);
+    QVERIFY(game.start(image(), 4, 42));
+    game.rotatePiece(0, 1);
+    QCOMPARE(rotations.size(), 0);
+    QTRY_COMPARE(flow.state(), AppController::State::Playing);
+    game.rotatePiece(0, -5);
+    QCOMPARE(rotations.size(), 1);
+    QCOMPARE(rotations.front().at(1).toInt(), -1);
+    game.restart();
+    const int angle = model->pieces().front().rotation;
+    game.rotatePiece(0, 1);
+    QCOMPARE(rotations.size(), 1);
+    QCOMPARE(model->pieces().front().rotation, angle);
+    QTRY_COMPARE(flow.state(), AppController::State::Playing);
+    game.cancel();
+    const auto before = model->pieces();
+    game.rotatePiece(0, 1);
+    QCOMPARE(rotations.size(), 1);
+    QCOMPARE(model->pieces().front().rotation, before.front().rotation);
+    QCOMPARE(model->pieces().front().position, before.front().position);
+    QVERIFY(game.start(image(), 4, 43));
+    QTRY_COMPARE(flow.state(), AppController::State::Playing);
+    for (int id = 0; id < model->pieces().size(); ++id) {
+        game.rotatePiece(id, -model->pieces().at(id).rotation / 90);
+        game.dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
+    }
+    QCOMPARE(flow.state(), AppController::State::Completed);
+    rotations.clear();
+    game.rotatePiece(0, 1);
+    QCOMPARE(rotations.size(), 0);
+    QCOMPARE(model->pieces().front().rotation, 0);
 }
 void GameControllerTest::completesAllCounts_data()
 {
@@ -59,6 +101,7 @@ void GameControllerTest::completesAllCounts()
     QCOMPARE(progress.size(), 1);
     QCOMPARE(progress.front().at(0).toInt(), 0);
     for (int id = count - 1; id >= 0; --id) {
+        game.rotatePiece(id, -model->pieces().at(id).rotation / 90);
         game.dropPiece(id, model->pieces().at(id).source.topLeft(), 0);
         QCOMPARE(model->placedCount(), count - id);
         QCOMPARE(flow.state(), id == 0 ? AppController::State::Completed : AppController::State::Playing);
@@ -70,6 +113,8 @@ void GameControllerTest::completesAllCounts()
         QCOMPARE(progress.at(index).at(1).toInt(), count);
     }
     game.dropPiece(0, {}, 1000);
+    game.rotatePiece(0, 1);
+    QCOMPARE(model->pieces().front().rotation, 0);
     QVERIFY(!game.start(image(), 4, 42));
     QCOMPARE(victory.size(), 1);
     QCOMPARE(states.size(), 3);
@@ -132,10 +177,14 @@ void GameControllerTest::restartRegenerateAndGuards()
     QTRY_COMPARE(flow.state(), AppController::State::Playing);
     auto *model = game.model();
     const auto geometry = model->pieces();
+    game.rotatePiece(0, -model->pieces().front().rotation / 90);
     game.dropPiece(0, geometry.front().source.topLeft(), 0);
     QCOMPARE(model->placedCount(), 1);
     game.restart();
     QCOMPARE(flow.state(), AppController::State::Preparing);
+    const int angle = model->pieces().at(1).rotation;
+    game.rotatePiece(1, 1);
+    QCOMPARE(model->pieces().at(1).rotation, angle);
     game.dropPiece(1, geometry.at(1).source.topLeft(), 0);
     QCOMPARE(model->placedCount(), 1);
     QTRY_COMPARE(flow.state(), AppController::State::Playing);

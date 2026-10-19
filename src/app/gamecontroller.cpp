@@ -76,3 +76,9 @@ void GameController::dropPiece(int id, QPointF position, qreal tolerance)
     if (m_flow->state() == AppController::State::Playing)
         m_model->place(id, position, tolerance);
 }
+
+void GameController::rotatePiece(int id, int quarterTurns)
+{
+    if (m_flow->state() == AppController::State::Playing)
+        m_model->rotate(id, quarterTurns);
+}

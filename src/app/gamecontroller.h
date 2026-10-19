@@ -28,6 +28,9 @@ public slots:
     /** @brief Принимает отпускание только в активной игре. @param id Номер детали.
      * @param position Позиция в сцене. @param tolerance Допуск закрепления. */
     void dropPiece(int id, QPointF position, qreal tolerance);
+    /** @brief Поворачивает деталь только в активной игре. @param id Номер детали.
+     * @param quarterTurns Четверти оборота; положительное направление — по часовой стрелке. */
+    void rotatePiece(int id, int quarterTurns);
 signals:
     /** @brief Сообщает об ошибке подготовки. @param message Описание для пользователя. */
     void preparationFailed(const QString &message);

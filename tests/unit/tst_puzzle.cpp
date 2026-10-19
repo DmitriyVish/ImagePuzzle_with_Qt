@@ -5,6 +5,7 @@
 #include <limits>
 #include <QPainter>
 #include <QLineF>
+#include <QSet>
 
 /** @brief Проверяет геометрию, ограничения, закрепление и сброс независимо от интерфейса. */
 class PuzzleTest : public QObject
@@ -29,7 +30,148 @@ private slots:
     void invalidDrops();
     /** @brief Проверяет точную границу евклидова допуска и отсутствие повторного прогресса. */
     void snapToleranceBoundary();
+    /** @brief Проверяет случайные углы, их воспроизводимость, шаги и запрет закрепления неверного угла. */
+    void rotations();
+    /** @brief Проверяет повороты и возврат в лоток на вытянутых изображениях и у границ. */
+    void rotationBounds();
+    /** @brief Задаёт направления, полные обороты и крайние значения количества поворотов. */
+    void rotationSignals_data();
+    /** @brief Проверяет порядок сигналов, нормализацию направления и отсутствие событий при отказе. */
+    void rotationSignals();
 };
+
+void PuzzleTest::rotationSignals_data()
+{
+    QTest::addColumn<int>("turns");
+    for (int turns : {0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5,
+                      std::numeric_limits<int>::max(), std::numeric_limits<int>::min(),
+                      std::numeric_limits<int>::min() + 1})
+        QTest::newRow(qPrintable(QString::number(turns))) << turns;
+}
+
+void PuzzleTest::rotationSignals()
+{
+    QFETCH(int, turns);
+    QImage image(400, 400, QImage::Format_RGB32);
+    image.fill(Qt::gray);
+    PuzzleModel model;
+    QVERIFY(model.start(image, 4, 42));
+    const PuzzlePiece original = model.pieces().front();
+    QSignalSpy changed(&model, &PuzzleModel::pieceChanged);
+    QSignalSpy rotated(&model, &PuzzleModel::pieceRotated);
+    QSignalSpy progress(&model, &PuzzleModel::progressChanged);
+    QStringList order;
+    connect(&model, &PuzzleModel::pieceChanged, &model, [&order] { order.append(QStringLiteral("changed")); });
+    connect(&model, &PuzzleModel::pieceRotated, &model, [&order] { order.append(QStringLiteral("rotated")); });
+    const int normalized = turns % 4;
+    QCOMPARE(model.rotate(0, turns), normalized != 0);
+    QCOMPARE(model.pieces().front().rotation, (original.rotation + normalized * 90 + 360) % 360);
+    QCOMPARE(rotated.size(), normalized != 0 ? 1 : 0);
+    QCOMPARE(changed.size(), rotated.size());
+    if (normalized != 0) {
+        QCOMPARE(rotated.front().at(0).toInt(), 0);
+        QCOMPARE(rotated.front().at(1).toInt(), normalized);
+        QCOMPARE(order, QStringList({QStringLiteral("changed"), QStringLiteral("rotated")}));
+    } else {
+        QCOMPARE(model.pieces().front().position, original.position);
+        QCOMPARE(model.pieces().front().scale, original.scale);
+        QVERIFY(order.isEmpty());
+    }
+    const qsizetype count = rotated.size();
+    QVERIFY(!model.rotate(-1, turns));
+    QVERIFY(!model.rotate(4, turns));
+    QCOMPARE(rotated.size(), count);
+    QCOMPARE(changed.size(), count);
+    QCOMPARE(progress.size(), 0);
+    model.rotate(0, -model.pieces().front().rotation / 90);
+    QVERIFY(model.place(0, model.pieces().front().source.topLeft(), 0));
+    changed.clear(); rotated.clear(); progress.clear(); order.clear();
+    QVERIFY(!model.rotate(0, turns));
+    QCOMPARE(model.pieces().front().rotation, 0);
+    QCOMPARE(changed.size(), 0);
+    QCOMPARE(rotated.size(), 0);
+    QCOMPARE(progress.size(), 0);
+    QVERIFY(order.isEmpty());
+}
+
+void PuzzleTest::rotations()
+{
+    QImage image(640, 480, QImage::Format_RGB32);
+    image.fill(Qt::green);
+    PuzzleModel model;
+    PuzzleModel same;
+    QVERIFY(model.start(image, 20, 42));
+    QVERIFY(same.start(image, 20, 42));
+    QSet<int> angles;
+    for (int id = 0; id < model.pieces().size(); ++id) {
+        const auto &piece = model.pieces().at(id);
+        QVERIFY(piece.rotation >= 0 && piece.rotation < 360 && piece.rotation % 90 == 0);
+        QCOMPARE(piece.rotation, same.pieces().at(id).rotation);
+        QCOMPARE(piece.position, same.pieces().at(id).position);
+        angles.insert(piece.rotation);
+    }
+    QCOMPARE(angles.size(), 4);
+    model.rotate(0, -model.pieces().front().rotation / 90);
+    const QPointF target = model.pieces().front().source.topLeft();
+    QSignalSpy changes(&model, &PuzzleModel::pieceChanged);
+    QSignalSpy progress(&model, &PuzzleModel::progressChanged);
+    QSignalSpy victory(&model, &PuzzleModel::completed);
+    QVERIFY(!model.rotate(-1, 1));
+    QVERIFY(!model.rotate(20, 1));
+    QVERIFY(!model.rotate(0, 4));
+    QCOMPARE(changes.size(), 0);
+    // В центре поля остаётся место для обоих размеров прямоугольной детали.
+    const QPointF center = QRectF(QPointF(), model.pieces().front().source.size()).center();
+    QVERIFY(model.place(0, model.boardRect().center() - center, 0));
+    const QPointF before = model.pieces().front().position;
+    for (int rotation : {90, 180, 270}) {
+        QVERIFY(model.rotate(0, 1));
+        QCOMPARE(model.pieces().front().rotation, rotation);
+        QCOMPARE(model.pieces().front().position, before);
+        QVERIFY(model.place(0, before, 10000));
+        QVERIFY(!model.pieces().front().placed);
+        QCOMPARE(model.placedCount(), 0);
+    }
+    QVERIFY(model.rotate(0, -1));
+    QCOMPARE(model.pieces().front().rotation, 180);
+    QVERIFY(!model.rotate(0, std::numeric_limits<int>::min()));
+    QCOMPARE(model.pieces().front().rotation, 180);
+    QVERIFY(model.rotate(0, 2));
+    QCOMPARE(model.pieces().front().rotation, 0);
+    QVERIFY(model.place(0, target, 0));
+    QCOMPARE(progress.size(), 1);
+    QVERIFY(!model.rotate(0, 1));
+    QCOMPARE(victory.size(), 0);
+    model.restart(99);
+    same.restart(99);
+    for (int id = 0; id < model.pieces().size(); ++id) {
+        QCOMPARE(model.pieces().at(id).rotation, same.pieces().at(id).rotation);
+        QVERIFY(!model.pieces().at(id).placed);
+    }
+}
+
+void PuzzleTest::rotationBounds()
+{
+    for (const QSize size : {QSize(1600, 32), QSize(32, 1600), QSize(32, 32), QSize(640, 480)}) {
+        QImage image(size, QImage::Format_RGB32);
+        image.fill(Qt::blue);
+        for (quint32 seed = 0; seed < 4; ++seed) {
+            PuzzleModel model;
+            QVERIFY(model.start(image, qMin(17, PuzzleGenerator::maximumPieces(size)), seed));
+            for (int id = 0; id < model.pieces().size(); ++id) {
+                for (int turn = 0; turn < 4; ++turn) {
+                    QVERIFY(model.rotate(id, 1));
+                    const auto &piece = model.pieces().at(id);
+                    const QRectF bounds = piece.boundsAtScale(piece.scale).translated(piece.position);
+                    QVERIFY(model.trayRect().adjusted(-0.00001, -0.00001, 0.00001, 0.00001).contains(bounds));
+                    const QPointF center = QRectF(QPointF(), piece.source.size()).center();
+                    QVERIFY(model.place(id, model.trayRect().center() - center, 0));
+                    QVERIFY(!piece.placed);
+                }
+            }
+        }
+    }
+}
 
 void PuzzleTest::invalidDrops_data()
 {
@@ -79,6 +221,7 @@ void PuzzleTest::snapToleranceBoundary()
     image.fill(Qt::green);
     PuzzleModel model;
     QVERIFY(model.start(image, 4, 42));
+    model.rotate(0, -model.pieces().front().rotation / 90);
     const QPointF target = model.pieces().front().source.topLeft();
     // Смещение 3–4–5 проверяет круговой допуск, а не прямоугольную область.
     QPointF delta(3, 4);
@@ -155,16 +298,17 @@ void PuzzleTest::placementAndRestart()
     QVERIFY(model.start(image, 17, 42));
     const auto original = model.pieces();
     for (int i = 0; i < original.size(); ++i) {
-        const QRectF rectangle(original.at(i).position, QSizeF(original.at(i).source.size()) * original.at(i).scale);
+        const QRectF rectangle = original.at(i).boundsAtScale(original.at(i).scale).translated(original.at(i).position);
         QVERIFY(model.trayRect().contains(rectangle));
         for (int j = 0; j < i; ++j)
-            QVERIFY(!rectangle.intersects(QRectF(original.at(j).position, QSizeF(original.at(j).source.size()) * original.at(j).scale)));
+            QVERIFY(!rectangle.intersects(original.at(j).boundsAtScale(original.at(j).scale).translated(original.at(j).position)));
     }
     QVERIFY(!model.place(-1, {}, 5));
     QVERIFY(!model.place(0, QPointF(-1000, -1000), 5));
     QVERIFY(!model.place(0, QPointF(std::numeric_limits<double>::quiet_NaN(), 0), 5));
     QCOMPARE(model.pieces().at(0).position, original.at(0).position);
     for (int id = 0; id < model.pieces().size(); ++id) {
+        model.rotate(id, -model.pieces().at(id).rotation / 90);
         // Угловая деталь должна закрепляться даже при отпускании чуть снаружи поля.
         const QPointF nearTarget = QPointF(model.pieces().at(id).source.topLeft()) - QPointF(1, 1);
         QVERIFY(model.place(id, nearTarget, 3));
@@ -211,16 +355,17 @@ void PuzzleTest::compactTray()
                 for (int i = 0; i < pieces.size(); ++i) {
                     const auto &piece = pieces.at(i);
                     QVERIFY(piece.scale > 0 && piece.scale <= 0.42);
-                    const QRectF rectangle(piece.position, QSizeF(piece.source.size()) * piece.scale);
+                    const QRectF rectangle = piece.boundsAtScale(piece.scale).translated(piece.position);
                     QVERIFY(model.trayRect().adjusted(-0.00001, -0.00001, 0.00001, 0.00001).contains(rectangle));
                     for (int j = 0; j < i; ++j)
-                        QVERIFY(!rectangle.intersects(QRectF(pieces.at(j).position, QSizeF(pieces.at(j).source.size()) * pieces.at(j).scale)));
+                        QVERIFY(!rectangle.intersects(pieces.at(j).boundsAtScale(pieces.at(j).scale).translated(pieces.at(j).position)));
                 }
                 const auto &first = pieces.front();
                 const QPointF sourceCenter = QRectF(QPointF(), first.source.size()).center();
                 QVERIFY(model.place(0, model.trayRect().center() - sourceCenter, 0));
                 QVERIFY(model.pieces().front().scale < 1);
                 QVERIFY(!model.pieces().front().placed);
+                model.rotate(0, -model.pieces().front().rotation / 90);
                 QVERIFY(model.place(0, first.source.topLeft(), 0));
                 QCOMPARE(model.pieces().front().scale, 1.0);
                 QVERIFY(model.pieces().front().placed);

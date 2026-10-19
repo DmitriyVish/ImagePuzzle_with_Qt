@@ -39,8 +39,10 @@ int SelfCheck::run(const QString &reportPath)
             continue;
         }
         // Используется тот же контракт отпускания, что и у игрового контроллера.
-        for (int id = 0; id < model.pieces().size(); ++id)
+        for (int id = 0; id < model.pieces().size(); ++id) {
+            model.rotate(id, -model.pieces().at(id).rotation / 90);
             model.place(id, model.pieces().at(id).source.topLeft(), 0);
+        }
         if (model.placedCount() != 17)
             errors.append(path + QStringLiteral(": incomplete puzzle"));
         else

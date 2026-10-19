@@ -3,8 +3,9 @@
 
 #include "puzzlescene.h"
 #include <QGraphicsView>
+class QGestureEvent;
 
-/** @brief Общий механизм перетаскивания мышью и одним пальцем; пустое место перемещает обзор. */
+/** @brief Перенос мышью/пальцем, двойной клик и двухпальцевое вращение; пустое место перемещает обзор. */
 class PuzzleView : public QGraphicsView
 {
     Q_OBJECT
@@ -26,6 +27,9 @@ signals:
     /** @brief Передаёт отпускание контроллеру. @param id Номер детали. @param position Позиция сцены.
      * @param tolerance Допуск в координатах сцены. */
     void pieceDropped(int id, QPointF position, qreal tolerance);
+    /** @brief Передаёт поворот контроллеру. @param id Номер детали.
+     * @param quarterTurns Четверти оборота; положительное направление — по часовой стрелке. */
+    void pieceRotationRequested(int id, int quarterTurns);
 protected:
     /** @brief Обрабатывает касания viewport. @param event Событие. @return true при обработке. */
     bool viewportEvent(QEvent *event) override;
@@ -37,6 +41,8 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     /** @brief Завершает перенос мышью. @param event Событие мыши. */
     void mouseReleaseEvent(QMouseEvent *event) override;
+    /** @brief Поворачивает незакреплённую деталь на 90° по часовой стрелке. @param event Событие мыши. */
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     /** @brief Масштабирует Ctrl+колесом. @param event Событие колеса. */
     void wheelEvent(QWheelEvent *event) override;
     /** @brief Поддерживает режим показа всего поля. @param event Событие размера. */
@@ -50,14 +56,24 @@ private:
     void endPointer(QPoint position, bool touch);
     /** @brief Ограничивает ручной масштаб. @param factor Множитель масштаба. */
     void zoom(qreal factor);
+    /** @brief Выбирает цель вращения и отменяет перенос до конца последовательности касаний.
+     * @param position Центр жеста в координатах viewport. */
+    void beginRotation(QPoint position);
+    /** @brief Принимает вращение QPinchGesture, игнорируя масштаб и сдвиг центра.
+     * @param event Событие жеста. @return true, если найден pinch-жест. */
+    bool handleGesture(QGestureEvent *event);
     PuzzleModel *m_model; ///< Модель живёт дольше представления.
     PuzzleScene *m_scene; ///< Дочерняя сцена.
     PieceItem *m_dragged = nullptr; ///< Временное положение не записывается в модель до отпускания.
-    QPointF m_offset; ///< Смещение точки захвата внутри детали.
+    QPointF m_offset; ///< Смещение захвата с учётом поворота, но без масштаба.
     QPoint m_last; ///< Последняя точка панорамирования.
     int m_touchId = -1; ///< Единственный активный палец.
     bool m_mouse = false; ///< Активен жест мыши.
     bool m_pan = false; ///< Активно панорамирование пустого пространства.
     bool m_fit = true; ///< Сохраняется ли автоматическое вписывание при resize.
+    int m_rotationId = -1; ///< Цель текущего вращения; закреплённые детали не выбираются.
+    qreal m_rotationRemainder = 0; ///< Накопленный угол после вычета выполненных четвертей оборота.
+    bool m_blockTouchDrag = false; ///< После двух пальцев перенос блокируется до отпускания всех пальцев.
+    bool m_pinchActive = false; ///< Защищает выбор детали от повторного начала при обновлении жеста.
 };
 #endif

@@ -6,6 +6,9 @@
 #include <QScrollBar>
 #include <QTouchEvent>
 #include <QWheelEvent>
+#include <QGestureEvent>
+#include <QPinchGesture>
+#include <cmath>
 
 Q_LOGGING_CATEGORY(lcInput, "imagepuzzle.input", QtInfoMsg)
 
@@ -18,6 +21,7 @@ PuzzleView::PuzzleView(PuzzleModel *model, QWidget *parent)
     setRenderHint(QPainter::SmoothPixmapTransform);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     viewport()->setAttribute(Qt::WA_AcceptTouchEvents);
+    viewport()->grabGesture(Qt::PinchGesture);
     setMouseTracking(true);
     connect(model, &PuzzleModel::aboutToReset, this, &PuzzleView::cancelPointer);
     connect(model, &PuzzleModel::puzzleReset, this, &PuzzleView::fitAll);
@@ -26,7 +30,7 @@ PuzzleView::PuzzleView(PuzzleModel *model, QWidget *parent)
 PuzzleScene *PuzzleView::puzzleScene() { return m_scene; }
 void PuzzleView::fitAll()
 {
-    if (m_dragged || m_pan)
+    if (m_dragged || m_pan || m_blockTouchDrag || m_pinchActive)
         cancelPointer();
     m_fit = true;
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -40,7 +44,7 @@ void PuzzleView::fitAll()
 }
 void PuzzleView::zoom(qreal factor)
 {
-    if (m_dragged || m_pan)
+    if (m_dragged || m_pan || m_blockTouchDrag || m_pinchActive)
         cancelPointer();
     const qreal current = transform().m11();
     const qreal next = qBound(0.03, current * factor, 6.0);
@@ -60,10 +64,11 @@ void PuzzleView::beginPointer(QPoint position)
                     << "piece:" << (piece ? piece->id() : -1) << "DPR:" << devicePixelRatioF();
     if (piece && !m_model->pieces().at(piece->id()).placed) {
         m_dragged = piece;
-        // Точка захвата хранится в координатах исходного изображения: увеличение миниатюры
-        // не меняет участок детали, находящийся под пальцем или мышью.
-        m_offset = piece->mapFromScene(mapToScene(position));
+        // Поворот уже входит в смещение: увеличение сохраняет тот же пиксель под указателем.
+        const QPointF local = piece->mapFromScene(mapToScene(position));
+        piece->finishRotation();
         piece->setScale(1.0);
+        m_offset = piece->transform().map(local);
         piece->setPos(mapToScene(position) - m_offset);
         piece->setZValue(10);
     } else {
@@ -131,10 +136,72 @@ void PuzzleView::cancelPointer()
     m_touchId = -1;
     m_mouse = false;
     m_pan = false;
+    m_rotationId = -1;
+    m_rotationRemainder = 0;
+    m_blockTouchDrag = false;
+    m_pinchActive = false;
     viewport()->unsetCursor();
 }
+
+void PuzzleView::beginRotation(QPoint position)
+{
+    PieceItem *piece = m_dragged ? m_dragged : qgraphicsitem_cast<PieceItem *>(itemAt(position));
+    const int id = piece && !m_model->pieces().at(piece->id()).placed ? piece->id() : -1;
+    // Второй палец меняет режим ввода. Отпускание пальцев после вращения не должно уронить деталь.
+    cancelPointer();
+    m_rotationId = id;
+    m_blockTouchDrag = true;
+}
+
+bool PuzzleView::handleGesture(QGestureEvent *event)
+{
+    auto *pinch = static_cast<QPinchGesture *>(event->gesture(Qt::PinchGesture));
+    if (!pinch)
+        return false;
+    event->accept(pinch);
+    if (event->type() == QEvent::GestureOverride)
+        return true;
+    if (!isEnabled()) {
+        cancelPointer();
+        return true;
+    }
+    if (pinch->state() == Qt::GestureCanceled) {
+        cancelPointer();
+        m_blockTouchDrag = true;
+        return true;
+    }
+    if (!m_pinchActive) {
+        if (!m_blockTouchDrag)
+            beginRotation(viewport()->mapFromGlobal(pinch->centerPoint().toPoint()));
+        m_pinchActive = true;
+    }
+    if (m_rotationId >= 0 && pinch->changeFlags().testFlag(QPinchGesture::RotationAngleChanged)) {
+        // Нормализация исключает скачок на полный оборот при переходе угла через ±180°.
+        const qreal delta = std::remainder(pinch->rotationAngle() - pinch->lastRotationAngle(), 360.0);
+        if (qIsFinite(delta)) {
+            m_rotationRemainder += delta;
+            // Порог 60° даёт запас против дрожания и обратного переключения после шага на 90°.
+            const int turns = qAbs(m_rotationRemainder) >= 60
+                ? int(std::copysign(std::floor((qAbs(m_rotationRemainder) + 30) / 90), m_rotationRemainder)) : 0;
+            if (turns != 0) {
+                m_rotationRemainder -= turns * 90;
+                qCDebug(lcInput) << "Pinch rotation, piece:" << m_rotationId << "quarter turns:" << turns;
+                emit pieceRotationRequested(m_rotationId, turns);
+            }
+        }
+    }
+    if (pinch->state() == Qt::GestureFinished) {
+        m_rotationId = -1;
+        m_rotationRemainder = 0;
+        m_pinchActive = false;
+    }
+    return true;
+}
+
 bool PuzzleView::viewportEvent(QEvent *event)
 {
+    if (event->type() == QEvent::Gesture || event->type() == QEvent::GestureOverride)
+        return handleGesture(static_cast<QGestureEvent *>(event));
     if (event->type() == QEvent::TouchCancel) {
         cancelPointer();
         event->accept();
@@ -147,6 +214,25 @@ bool PuzzleView::viewportEvent(QEvent *event)
             return true;
         }
         auto *touch = static_cast<QTouchEvent *>(event);
+        // После системной отмены TouchEnd может не прийти; новая последовательность снимает блокировку.
+        if (event->type() == QEvent::TouchBegin && m_blockTouchDrag)
+            cancelPointer();
+        int activePoints = 0;
+        QPointF center;
+        for (const auto &point : touch->points()) {
+            if (point.state() != QEventPoint::State::Released) {
+                ++activePoints;
+                center += point.position();
+            }
+        }
+        if (activePoints >= 2 && !m_blockTouchDrag && !m_mouse)
+            beginRotation((center / activePoints).toPoint());
+        if (m_blockTouchDrag) {
+            if (event->type() == QEvent::TouchEnd)
+                cancelPointer();
+            event->accept();
+            return true;
+        }
         if (event->type() == QEvent::TouchBegin && m_touchId < 0 && !m_mouse && !touch->points().isEmpty()) {
             m_touchId = touch->points().front().id();
             beginPointer(touch->points().front().position().toPoint());
@@ -170,6 +256,8 @@ bool PuzzleView::viewportEvent(QEvent *event)
 }
 bool PuzzleView::event(QEvent *event)
 {
+    if (event->type() == QEvent::Gesture || event->type() == QEvent::GestureOverride)
+        return handleGesture(static_cast<QGestureEvent *>(event));
     if (event->type() == QEvent::WindowDeactivate || event->type() == QEvent::Hide
         || (event->type() == QEvent::EnabledChange && !isEnabled()))
         cancelPointer();
@@ -177,7 +265,7 @@ bool PuzzleView::event(QEvent *event)
 }
 void PuzzleView::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && m_touchId < 0) {
+    if (event->button() == Qt::LeftButton && m_touchId < 0 && !m_blockTouchDrag) {
         m_mouse = true;
         beginPointer(event->position().toPoint());
         event->accept();
@@ -212,9 +300,22 @@ void PuzzleView::wheelEvent(QWheelEvent *event)
         QGraphicsView::wheelEvent(event);
     }
 }
+void PuzzleView::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && m_touchId < 0 && !m_blockTouchDrag) {
+        auto *piece = qgraphicsitem_cast<PieceItem *>(itemAt(event->position().toPoint()));
+        const int id = piece ? piece->id() : -1;
+        cancelPointer();
+        if (id >= 0 && !m_model->pieces().at(id).placed)
+            emit pieceRotationRequested(id, 1);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
+}
 void PuzzleView::resizeEvent(QResizeEvent *event)
 {
-    if (m_dragged || m_pan)
+    if (m_dragged || m_pan || m_blockTouchDrag || m_pinchActive)
         cancelPointer();
     QGraphicsView::resizeEvent(event);
     if (m_fit)

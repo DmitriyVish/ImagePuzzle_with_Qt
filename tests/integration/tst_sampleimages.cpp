@@ -177,8 +177,10 @@ void ImageIntegrationTest::solvesPhotos()
         QSignalSpy completed(&model, &PuzzleModel::completed);
         QVERIFY(model.start(loaded.image, count, 20261017u));
         QCOMPARE(model.pieces().size(), count);
-        for (int id = 0; id < count; ++id)
+        for (int id = 0; id < count; ++id) {
+            model.rotate(id, -model.pieces().at(id).rotation / 90);
             QVERIFY(model.place(id, model.pieces().at(id).source.topLeft(), 0));
+        }
         QCOMPARE(model.placedCount(), count);
         QCOMPARE(completed.size(), 1);
     }

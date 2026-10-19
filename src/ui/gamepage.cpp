@@ -1,5 +1,6 @@
 #include "gamepage.h"
 #include "puzzleview.h"
+#include "gamehelpdialog.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QProgressBar>
@@ -19,6 +20,10 @@ GamePage::GamePage(PuzzleModel *model, QWidget *parent) : QWidget(parent)
     QFont font = title->font(); font.setPointSizeF(font.pointSizeF() * 1.5); font.setBold(true);
     title->setFont(font);
     header->addWidget(title, 1);
+    m_helpButton = new QPushButton(tr("Как играть?"), this);
+    m_helpButton->setObjectName(QStringLiteral("howToPlayButton"));
+    m_helpButton->setMinimumHeight(44);
+    header->addWidget(m_helpButton);
     auto *back = new QPushButton(tr("← К выбору"), this);
     back->setObjectName(QStringLiteral("backButton"));
     back->setMinimumHeight(44);
@@ -39,9 +44,6 @@ GamePage::GamePage(PuzzleModel *model, QWidget *parent) : QWidget(parent)
     layout->addWidget(m_completion);
     m_view = new PuzzleView(model, this);
     m_view->setMinimumSize(160, 80);
-    m_view->setToolTip(tr("Поле сборки слева, фрагменты справа. Перетаскивайте детали мышью или пальцем. "
-                         "В лотке детали уменьшены и увеличиваются при захвате. "
-                         "Перетаскивание пустого места перемещает обзор; Ctrl+колесо меняет масштаб."));
     layout->addWidget(m_view, 1);
     auto *zoomRow = new QHBoxLayout;
     auto *minus = new QPushButton(tr("−"), this);
@@ -70,6 +72,15 @@ GamePage::GamePage(PuzzleModel *model, QWidget *parent) : QWidget(parent)
     }
     // Одна строка инструментов освобождает высоту для фотографии, особенно в окне 640×480.
     layout->addLayout(zoomRow);
+    m_help = new GameHelpDialog(this);
+    connect(m_helpButton, &QPushButton::clicked, this, &GamePage::showHelp);
+    connect(m_help, &QDialog::finished, this, [this] {
+        if (isVisible() && m_helpButton->isEnabled()) {
+            // После закрытия отдельного модального окна клавиатура возвращается к игровым действиям.
+            window()->activateWindow();
+            m_helpButton->setFocus(Qt::OtherFocusReason);
+        }
+    });
     connect(back, &QPushButton::clicked, this, &GamePage::setupRequested);
     connect(m_restart, &QPushButton::clicked, this, &GamePage::restartRequested);
     connect(m_regenerate, &QPushButton::clicked, this, &GamePage::regenerateRequested);
@@ -90,9 +101,28 @@ void GamePage::setState(AppController::State state)
     m_view->setEnabled(active);
     m_restart->setEnabled(active);
     m_regenerate->setEnabled(active);
+    m_helpButton->setEnabled(active);
+    if (!active && m_help->isVisible())
+        m_help->reject();
     m_completion->setVisible(state == AppController::State::Completed);
     if (state == AppController::State::Preparing) {
         m_progress->setRange(0, 0);
         m_summary->setText(tr("Подготовка игрового поля…"));
+    }
+}
+
+void GamePage::setReducedMotion(bool reduced) { m_help->setReducedMotion(reduced); }
+
+void GamePage::showHelp()
+{
+    if (!m_helpButton->isEnabled() || !isVisible())
+        return;
+    // Модальная карточка не должна оставлять полноразмерную деталь в состоянии перетаскивания.
+    m_view->cancelPointer();
+    if (m_help->isVisible()) {
+        m_help->raise();
+        m_help->activateWindow();
+    } else {
+        m_help->open();
     }
 }

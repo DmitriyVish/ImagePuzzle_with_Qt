@@ -11,11 +11,82 @@
 #include <QTimer>
 #include <QSet>
 #include <QLoggingCategory>
+#include <QLinearGradient>
 #include <cmath>
 
 Q_LOGGING_CATEGORY(lcEffects, "imagepuzzle.ui.effects")
 
 namespace {
+/** @brief Рисует три светящиеся спиральные дуги вокруг детали без участия в выборе указателем. */
+class RotationVortexItem : public QGraphicsItem
+{
+public:
+    /** @brief Создаёт ореол в локальных координатах владельца. @param piece Деталь, владеющая ореолом. */
+    explicit RotationVortexItem(PieceItem *piece) : QGraphicsItem(piece), m_piece(piece)
+    {
+        const QRectF pieceRect = piece->boundingRect();
+        m_margin = qBound(14.0, qMin(pieceRect.width(), pieceRect.height()) * 0.16, 36.0);
+        m_bounds = pieceRect.adjusted(-m_margin, -m_margin, m_margin, m_margin);
+        setAcceptedMouseButtons(Qt::NoButton);
+        setData(0, QStringLiteral("rotationVortex"));
+        setZValue(1);
+        hide();
+    }
+    /** @brief Ограничивает все слои свечения для корректного обновления сцены. @return Локальные границы ореола. */
+    QRectF boundingRect() const override { return m_bounds; }
+    /** @brief Исключает декоративные дуги из hit testing. @return Пустой контур. */
+    QPainterPath shape() const override { return {}; }
+    /** @brief Рисует мягкие хвосты и яркие концы дуг. @param painter Рисователь.
+     * @param option Параметры Qt. @param widget Виджет отображения. */
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    {
+        constexpr qreal pi = 3.141592653589793;
+        const qreal progress = m_piece->rotationProgress();
+        const qreal intensity = std::sin(pi * progress);
+        if (intensity <= 0) return;
+        const QRectF pieceRect = m_piece->boundingRect();
+        const QPointF center = pieceRect.center();
+        const qreal rx = pieceRect.width() / 2 + m_margin * 0.35;
+        const qreal ry = pieceRect.height() / 2 + m_margin * 0.35;
+        const qreal width = qBound(5.0, qMin(pieceRect.width(), pieceRect.height()) * 0.075, 18.0);
+        const int direction = data(1).toInt();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setBrush(Qt::NoBrush);
+        // Многослойные векторные штрихи дают мягкое свечение без размытия всей текстуры детали.
+        for (int arm = 0; arm < 3; ++arm) {
+            QPainterPath path;
+            QPointF first;
+            QPointF tip;
+            for (int step = 0; step <= 24; ++step) {
+                const qreal t = step / 24.0;
+                const qreal angle = arm * 2 * pi / 3 + direction * (progress * 3.8 + t * 1.7);
+                const qreal radius = 1 - 0.12 * t;
+                const QPointF point = center + QPointF(rx * radius * std::cos(angle), ry * radius * std::sin(angle));
+                if (step == 0) { first = point; path.moveTo(point); }
+                else path.lineTo(point);
+                tip = point;
+            }
+            for (const auto &layer : {QPair<qreal, int>{1.8, 38}, {1.0, 110}, {0.26, 235}}) {
+                QLinearGradient glow(first, tip);
+                const int alpha = qRound(layer.second * intensity);
+                glow.setColorAt(0, QColor(37, 170, 106, 0));
+                glow.setColorAt(0.5, QColor(42, 202, 120, alpha / 2));
+                glow.setColorAt(1, QColor(136, 255, 179, alpha));
+                painter->setPen(QPen(QBrush(glow), width * layer.first, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter->drawPath(path);
+            }
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(160, 255, 205, qRound(220 * intensity)));
+            painter->drawEllipse(tip, width * 0.18, width * 0.18);
+            painter->setBrush(Qt::NoBrush);
+        }
+    }
+private:
+    PieceItem *m_piece; ///< Владелец живёт дольше дочернего элемента.
+    QRectF m_bounds; ///< Постоянные границы учитывают ширину внешнего слоя свечения.
+    qreal m_margin = 0; ///< Запас в логических координатах вокруг детали.
+};
+
 /** @brief Рисует мягкое многослойное свечение только вдоль внутренних швов. */
 class SeamGlowItem : public QGraphicsItem
 {
@@ -52,14 +123,89 @@ private:
 }
 
 PieceItem::PieceItem(const QImage &image, const PuzzlePiece &piece)
-    : m_image(image), m_source(piece.source), m_shape(piece.shape), m_id(piece.id), m_locked(piece.placed), m_target(piece.position)
+    : m_image(image), m_source(piece.source), m_shape(piece.shape), m_id(piece.id), m_locked(piece.placed),
+      m_target(piece.position), m_turnAnimation(new QVariantAnimation(this))
 {
+    m_vortex = new RotationVortexItem(this);
+    setFlag(QGraphicsItem::ItemSendsGeometryChanges);
     setPos(piece.position);
     setScale(piece.scale);
+    setOrientation(piece.rotation);
     setAcceptedMouseButtons(Qt::NoButton);
+    m_turnAnimation->setObjectName(QStringLiteral("rotationAnimation"));
+    m_turnAnimation->setStartValue(0.0);
+    m_turnAnimation->setEndValue(1.0);
+    m_turnAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_turnAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+        m_turnProgress = value.toReal();
+        applyOrientation(m_turnFrom + (m_turnTarget - m_turnFrom) * m_turnProgress);
+        m_vortex->update();
+    });
+    connect(m_turnAnimation, &QVariantAnimation::finished, this, &PieceItem::finishRotation);
 }
 int PieceItem::type() const { return Type; }
 int PieceItem::id() const { return m_id; }
+void PieceItem::setOrientation(int degrees)
+{
+    m_rotation = degrees;
+    finishRotation();
+}
+int PieceItem::orientation() const { return m_rotation; }
+qreal PieceItem::displayedAngle() const { return m_displayAngle; }
+qreal PieceItem::rotationProgress() const { return m_turnProgress; }
+void PieceItem::applyOrientation(qreal degrees)
+{
+    m_displayAngle = degrees;
+    // Qt применяет scale() к локальным точкам до базового transform(): его перенос
+    // должен быть рассчитан вокруг уже масштабированного центра, иначе миниатюра смещается.
+    const QPointF center = boundingRect().center() * scale();
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(degrees);
+    transform.translate(-center.x(), -center.y());
+    setTransform(transform);
+}
+void PieceItem::rotateTo(int degrees, int quarterTurns, bool animate)
+{
+    // Цель накапливается, пока идёт анимация: 270° → 0° сохраняет направление,
+    // а новый щелчок продолжает движение из текущего кадра вместо скачка к прошлой цели.
+    m_turnAnimation->stop();
+    m_turnFrom = m_displayAngle;
+    m_turnTarget += quarterTurns * 90.0;
+    m_rotation = degrees;
+    if (!animate) {
+        finishRotation();
+        return;
+    }
+    m_turnProgress = 0;
+    m_vortex->setData(1, quarterTurns < 0 ? -1 : 1);
+    m_vortex->show();
+    setZValue(2);
+    m_turnAnimation->setDuration(qBound(200, qRound(qAbs(m_turnTarget - m_turnFrom) * 2.7), 420));
+    m_turnAnimation->start();
+    qCDebug(lcEffects) << "Rotation animation started, piece:" << m_id
+                      << "from:" << m_turnFrom << "to:" << m_turnTarget;
+}
+void PieceItem::finishRotation()
+{
+    const bool active = m_vortex && m_vortex->isVisible();
+    m_turnAnimation->stop();
+    m_turnTarget = m_rotation;
+    m_turnProgress = 0;
+    applyOrientation(m_rotation);
+    if (m_vortex) m_vortex->hide();
+    // Закрепление управляет собственным слоем; окончание поворота не должно гасить его свечение.
+    if (active) {
+        setZValue(m_locked ? -1 : 0);
+        qCDebug(lcEffects) << "Rotation animation finished, piece:" << m_id << "angle:" << m_rotation;
+    }
+}
+QVariant PieceItem::itemChange(GraphicsItemChange change, const QVariant &value)
+{
+    if (change == ItemScaleHasChanged)
+        applyOrientation(m_displayAngle);
+    return QGraphicsObject::itemChange(change, value);
+}
 QRectF PieceItem::boundingRect() const { return QRectF(QPointF(0, 0), m_source.size()); }
 QPainterPath PieceItem::shape() const { return m_shape; }
 void PieceItem::setLocked(bool locked) { m_locked = locked; update(); }
@@ -157,6 +303,10 @@ PuzzleScene::PuzzleScene(PuzzleModel *model, QObject *parent)
     });
     connect(model, &PuzzleModel::puzzleReset, this, &PuzzleScene::rebuild);
     connect(model, &PuzzleModel::pieceChanged, this, &PuzzleScene::updatePiece);
+    connect(model, &PuzzleModel::pieceRotated, this, [this](int id, int turns) {
+        if (auto *item = pieceItem(id))
+            item->rotateTo(m_model->pieces().at(id).rotation, turns, !m_reducedMotion);
+    });
     connect(model, &PuzzleModel::completed, this, &PuzzleScene::showCompleted);
 }
 PuzzleScene::~PuzzleScene()
@@ -169,7 +319,10 @@ void PuzzleScene::setReducedMotion(bool reduced)
 {
     m_reducedMotion = reduced;
     if (!reduced) return;
-    for (auto *item : m_items) item->finishPlacement();
+    for (auto *item : m_items) {
+        item->finishRotation();
+        item->finishPlacement();
+    }
     m_completionDelay->stop();
     if (m_pendingCompletion) presentCompleted();
     const bool running = m_completionAnimation->state() == QAbstractAnimation::Running;
@@ -213,6 +366,10 @@ void PuzzleScene::updatePiece(int id)
         return;
     const PuzzlePiece &piece = m_model->pieces().at(id);
     const bool newlyPlaced = piece.placed && !item->locked();
+    // Новый угол придёт следом через pieceRotated с направлением поворота. При обычном
+    // перемещении/закреплении доводим прошлую анимацию до дискретной ориентации модели.
+    if (item->orientation() == piece.rotation)
+        item->finishRotation();
     item->setScale(piece.scale);
     item->setLocked(piece.placed);
     item->settleAt(piece.position, newlyPlaced && !m_reducedMotion);

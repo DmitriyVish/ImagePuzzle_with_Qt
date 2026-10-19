@@ -17,6 +17,8 @@
 #include <QPropertyAnimation>
 #include <QSettings>
 #include <QStatusBar>
+#include <QTimer>
+#include <QWindowStateChangeEvent>
 
 Q_LOGGING_CATEGORY(lcWindow, "imagepuzzle.ui")
 
@@ -46,6 +48,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(motion, &QCheckBox::toggled, this, [this](bool reduced) {
         m_reducedMotion = reduced;
         if (auto *view = findChild<PuzzleView *>()) view->puzzleScene()->setReducedMotion(reduced);
+        m_gamePage->setReducedMotion(reduced);
         QSettings settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("ImagePuzzle"), QStringLiteral("NorthernExpedition"));
         settings.setValue(QStringLiteral("reducedMotion"), reduced);
         settings.sync();
@@ -62,6 +65,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_ui->windowLayout->insertWidget(0, brand);
     m_loadPage = new LoadPage(m_ui->pages);
     m_gamePage = new GamePage(m_game->model(), m_ui->pages);
+    m_gamePage->setReducedMotion(m_reducedMotion);
     m_gamePage->findChild<PuzzleView *>()->puzzleScene()->setReducedMotion(m_reducedMotion);
     m_ui->pages->addWidget(m_loadPage);
     m_ui->pages->addWidget(m_gamePage);
@@ -72,6 +76,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_gamePage, &GamePage::restartRequested, m_game, &GameController::restart);
     connect(m_gamePage, &GamePage::regenerateRequested, m_game, &GameController::regenerate);
     connect(m_gamePage->findChild<PuzzleView *>(), &PuzzleView::pieceDropped, m_game, &GameController::dropPiece);
+    connect(m_gamePage->findChild<PuzzleView *>(), &PuzzleView::pieceRotationRequested, m_game, &GameController::rotatePiece);
     connect(m_controller, &AppController::stateChanged, this, &MainWindow::updateScreen);
     connect(m_loader, &QFutureWatcher<ImageLoadResult>::finished, this, &MainWindow::imageLoaded);
     connect(m_game, &GameController::preparationFailed, m_loadPage, &LoadPage::showError);
@@ -85,6 +90,22 @@ MainWindow::~MainWindow()
     delete takeCentralWidget();
 }
 AppController::State MainWindow::state() const { return m_controller->state(); }
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() != QEvent::WindowStateChange)
+        return;
+    const auto *change = static_cast<QWindowStateChangeEvent *>(event);
+    const auto presentationStates = Qt::WindowMaximized | Qt::WindowFullScreen;
+    if (!((change->oldState() ^ windowState()) & presentationStates))
+        return;
+    if (auto *view = findChild<PuzzleView *>()) {
+        // Состояние окна может измениться раньше геометрии viewport. Отложенный вызов
+        // вписывает обе области после layout и возвращает автоподгонку для следующих resize.
+        QTimer::singleShot(0, view, &PuzzleView::fitAll);
+        qCInfo(lcWindow) << "Window presentation changed:" << change->oldState() << "->" << windowState();
+    }
+}
 void MainWindow::loadImage(const QString &path)
 {
     if (m_loader->isRunning() || m_controller->state() != AppController::State::Configuring || path.isEmpty())
@@ -103,6 +124,10 @@ void MainWindow::imageLoaded()
         return;
     }
     m_image = result.image;
+    const QFileInfo file(m_imagePath);
+    m_loadedImageKey = m_imagePath.startsWith(QLatin1Char(':')) ? m_imagePath : file.canonicalFilePath();
+    if (m_loadedImageKey.isEmpty())
+        m_loadedImageKey = file.absoluteFilePath();
     m_loadPage->setImage(m_image, QFileInfo(m_imagePath).fileName());
 }
 void MainWindow::openGame(int pieceCount)
@@ -119,6 +144,14 @@ void MainWindow::updateScreen(AppController::State state)
     QWidget *page = configuring ? static_cast<QWidget *>(m_loadPage) : static_cast<QWidget *>(m_gamePage);
     m_ui->pages->setCurrentWidget(page);
     page->setFocus(Qt::OtherFocusReason);
+    // Запоминаем успешный показ отдельно от загрузки: отменённая подготовка не расходует первый показ.
+    // Канонический путь исключает повтор для того же файла, открытого другим относительным путём.
+    if (state == AppController::State::Playing && !m_loadedImageKey.isEmpty()
+        && !m_helpShownImages.contains(m_loadedImageKey)) {
+        m_helpShownImages.insert(m_loadedImageKey);
+        qCInfo(lcWindow) << "First-game help for image:" << m_loadedImageKey;
+        m_gamePage->showHelp();
+    }
     if (state == AppController::State::Configuring)
         animateArrival(m_loadPage->findChild<QLabel *>(QStringLiteral("loadTitle")));
     else if (state == AppController::State::Completed)

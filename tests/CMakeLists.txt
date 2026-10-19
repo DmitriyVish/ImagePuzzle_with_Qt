@@ -1,12 +1,13 @@
-# Фикстуры images/ встраиваются только в тестовые EXE, не в приложение.
-file(GLOB IMAGEPUZZLE_TEST_IMAGES CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/images/*")
+# Фикстуры tests/fixtures/images/ встраиваются только в тестовые EXE, не в приложение.
+file(GLOB IMAGEPUZZLE_TEST_IMAGES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images/*")
 if(NOT IMAGEPUZZLE_TEST_IMAGES)
-    message(FATAL_ERROR "The images directory must contain test fixtures when BUILD_TESTING=ON.")
+    message(FATAL_ERROR "The tests/fixtures/images directory must contain test fixtures when BUILD_TESTING=ON.")
 endif()
 function(imagepuzzle_add_samples target)
     imagepuzzle_add_assets(${target})
     qt_add_resources(${target} "${target}_fixtures" PREFIX "/imagepuzzle"
-        BASE "${PROJECT_SOURCE_DIR}" FILES ${IMAGEPUZZLE_TEST_IMAGES})
+        # Сохраняем виртуальные пути :/imagepuzzle/images/ независимо от каталога исходных файлов.
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/fixtures" FILES ${IMAGEPUZZLE_TEST_IMAGES})
 endfunction()
 
 qt_add_executable(ImagePuzzleResourceTests integration/tst_sampleimages.cpp)
